@@ -1,0 +1,20 @@
+pub mod audit;
+pub mod auth;
+pub mod config;
+pub mod detectors;
+pub mod error;
+pub mod handover;
+pub mod headers;
+pub mod mcp_registry;
+pub mod middleware;
+pub mod performance;
+pub mod pipeline;
+pub mod pii;
+pub mod policy;
+pub mod routing;
+pub mod routes;
+pub mod streaming;
+pub mod tenants;
+pub mod tokens;
+
+pub use error::{SteerError, SteerResult};

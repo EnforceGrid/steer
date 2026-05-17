@@ -1,0 +1,29 @@
+# Build
+/target/
+
+# Libraries don't pin dependencies — don't commit lock file
+Cargo.lock
+
+# Local dev overrides
+.cargo/config.toml
+
+# Runtime data
+*.db
+*.db-shm
+*.db-wal
+
+# Config with secrets
+steer.yaml
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Editor / IDE
+.obsidian/
+**/.obsidian/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

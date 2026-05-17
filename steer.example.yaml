@@ -1,0 +1,61 @@
+# steer.example.yaml — copy to steer.yaml and fill in your values.
+# Environment variable substitution is supported: ${VAR} or ${VAR:-default}.
+
+proxy:
+  host: "0.0.0.0"
+  port: ${STEER_PORT:-8080}
+  fail_open: false       # set true only for initial testing; false blocks on policy error
+  timeout_ms: 30000
+  retry_attempts: 2
+
+# ── Upstream: default LLM provider ──────────────────────────────────────────
+upstream:
+  base_url: "https://api.openai.com"
+  api_key: "${OPENAI_API_KEY}"
+
+# ── Named providers (optional) ───────────────────────────────────────────────
+# Define additional providers and map model names to them.
+# Requests for an unmapped model fall through to upstream above.
+providers:
+  anthropic:
+    base_url: "https://api.anthropic.com"
+    api_key: "${ANTHROPIC_API_KEY}"
+
+models:
+  claude-sonnet-4-6:
+    provider: anthropic
+    model: claude-sonnet-4-6
+  claude-haiku-4-5-20251001:
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+
+# ── PII detection ────────────────────────────────────────────────────────────
+pii:
+  enabled: true
+  patterns:
+    - credit_card
+    - ssn
+    - email
+    - phone
+
+# ── Cedar policy enforcement ─────────────────────────────────────────────────
+policy:
+  format: cedar
+  policy_dir: "./dsl/policies"
+  watch: false   # set true to hot-reload .cedar files on change
+
+# ── Streaming ────────────────────────────────────────────────────────────────
+streaming:
+  enabled: true
+  buffer_size_bytes: 512
+  buffer_timeout_ms: 200
+
+# ── Audit ────────────────────────────────────────────────────────────────────
+audit:
+  backend: stdout    # stdout | file
+  log_path: "./audit.jsonl"
+  retain_payloads: masked   # never | masked | raw
+
+# ── Handover (human-in-the-loop holds) ───────────────────────────────────────
+handover:
+  enabled: false

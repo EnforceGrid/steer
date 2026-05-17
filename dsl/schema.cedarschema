@@ -1,0 +1,414 @@
+// EnforceGrid Cedar schema
+//
+// Defines the entity types and action signatures used by Steer's enforcement
+// pipeline.  This schema is used to type-check policies at write time — a
+// mis-typed context field (e.g. `context.injecton_detected` instead of
+// `context.injection_detected`) is caught here rather than silently evaluating
+// to false at runtime.
+//
+// Context attributes are identical for all actions: the full context block is
+// built once per request and passed to both request-side and response-side
+// evaluation.  Set fields (tool_names, requested_tools) use Set<String>.
+// All other fields are primitive (Bool / Long / String).
+//
+// Source of truth: src/policy/input.rs :: build_context().
+
+namespace EnforceGrid {
+
+  // ── Entity types ─────────────────────────────────────────────────────────
+
+  /// Caller identity — the agent, user, or API key making the request.
+  entity Principal;
+
+  /// The LLM request being evaluated (request-side context).
+  entity Request;
+
+  /// The LLM response being evaluated (response-side context).
+  entity Response;
+
+  // ── Shared context type ───────────────────────────────────────────────────
+  //
+  // Cedar does not support a named context type shared across actions, so the
+  // full attribute list is repeated for each action.
+
+  // ── Actions ──────────────────────────────────────────────────────────────
+
+  action "llm.request" appliesTo {
+    principal: Principal,
+    resource:  Request,
+    context: {
+      // Request identity
+      model:                     String,
+      risk_level:                String,
+      streaming:                 Bool,
+
+      // PII
+      pii_detected:              Bool,
+
+      // Tool fields (request-side: tools declared in the request)
+      tool_name:                 String,
+      tool_names:                Set<String>,
+      tool_count:                Long,
+      requested_tools:           Set<String>,
+
+      // Budget
+      budget_remaining_cents:    Long,
+      budget_utilization_pct:    Long,
+
+      // Content detectors
+      injection_detected:        Bool,
+      jailbreak_detected:        Bool,
+      threat_detected:           Bool,
+      identity_claim_detected:   Bool,
+      confidential_detected:     Bool,
+
+      // Exfiltration detector
+      exfiltration_detected:     Bool,
+      exfiltration_type:         String,
+
+      // Tool governance
+      unauthorized_tool_detected:     Bool,
+      tool_categories:                String,
+      tool_highest_risk_category:     String,
+      tool_allowlist_mode:            Bool,
+
+      // Namespaced control facts (new — coexists with flat fields during migration)
+      agent_integrity: {
+          injection_detected: Bool,
+          injection_score: Long,
+          injection_type: String,
+          jailbreak_detected: Bool,
+          jailbreak_score: Long,
+      },
+      data_protection: {
+          pii_present: Bool,
+          pii_count: Long,
+          confidential_detected: Bool,
+          exfiltration_detected: Bool,
+          exfiltration_risk: Long,
+          exfiltration_url_count: Long,
+      },
+      content_safety: {
+          threat_detected: Bool,
+          threat_score: Long,
+          toxicity_score: Long,
+      },
+      identity_safety: {
+          disclosure_detected: Bool,
+      },
+      tool_governance: {
+          unauthorized_detected: Bool,
+          highest_risk: String,
+      },
+      supply_chain: {
+          mcp_server_approved: Bool,
+          mcp_server_id: String,
+      },
+    }
+  };
+
+  action "llm.response" appliesTo {
+    principal: Principal,
+    resource:  Response,
+    context: {
+      model:                     String,
+      risk_level:                String,
+      streaming:                 Bool,
+      pii_detected:              Bool,
+      tool_name:                 String,
+      tool_names:                Set<String>,
+      tool_count:                Long,
+      requested_tools:           Set<String>,
+      budget_remaining_cents:    Long,
+      budget_utilization_pct:    Long,
+      injection_detected:        Bool,
+      jailbreak_detected:        Bool,
+      threat_detected:           Bool,
+      identity_claim_detected:   Bool,
+      confidential_detected:     Bool,
+      exfiltration_detected:     Bool,
+      exfiltration_type:         String,
+      unauthorized_tool_detected:     Bool,
+      tool_categories:                String,
+      tool_highest_risk_category:     String,
+      tool_allowlist_mode:            Bool,
+
+      // Namespaced control facts (new — coexists with flat fields during migration)
+      agent_integrity: {
+          injection_detected: Bool,
+          injection_score: Long,
+          injection_type: String,
+          jailbreak_detected: Bool,
+          jailbreak_score: Long,
+      },
+      data_protection: {
+          pii_present: Bool,
+          pii_count: Long,
+          confidential_detected: Bool,
+          exfiltration_detected: Bool,
+          exfiltration_risk: Long,
+          exfiltration_url_count: Long,
+      },
+      content_safety: {
+          threat_detected: Bool,
+          threat_score: Long,
+          toxicity_score: Long,
+      },
+      identity_safety: {
+          disclosure_detected: Bool,
+      },
+      tool_governance: {
+          unauthorized_detected: Bool,
+          highest_risk: String,
+      },
+      supply_chain: {
+          mcp_server_approved: Bool,
+          mcp_server_id: String,
+      },
+    }
+  };
+
+  action "tool.call" appliesTo {
+    principal: Principal,
+    resource:  Response,
+    context: {
+      model:                     String,
+      risk_level:                String,
+      streaming:                 Bool,
+      pii_detected:              Bool,
+      tool_name:                 String,
+      tool_names:                Set<String>,
+      tool_count:                Long,
+      requested_tools:           Set<String>,
+      budget_remaining_cents:    Long,
+      budget_utilization_pct:    Long,
+      injection_detected:        Bool,
+      jailbreak_detected:        Bool,
+      threat_detected:           Bool,
+      identity_claim_detected:   Bool,
+      confidential_detected:     Bool,
+      exfiltration_detected:     Bool,
+      exfiltration_type:         String,
+      unauthorized_tool_detected:     Bool,
+      tool_categories:                String,
+      tool_highest_risk_category:     String,
+      tool_allowlist_mode:            Bool,
+
+      // Namespaced control facts (new — coexists with flat fields during migration)
+      agent_integrity: {
+          injection_detected: Bool,
+          injection_score: Long,
+          injection_type: String,
+          jailbreak_detected: Bool,
+          jailbreak_score: Long,
+      },
+      data_protection: {
+          pii_present: Bool,
+          pii_count: Long,
+          confidential_detected: Bool,
+          exfiltration_detected: Bool,
+          exfiltration_risk: Long,
+          exfiltration_url_count: Long,
+      },
+      content_safety: {
+          threat_detected: Bool,
+          threat_score: Long,
+          toxicity_score: Long,
+      },
+      identity_safety: {
+          disclosure_detected: Bool,
+      },
+      tool_governance: {
+          unauthorized_detected: Bool,
+          highest_risk: String,
+      },
+      supply_chain: {
+          mcp_server_approved: Bool,
+          mcp_server_id: String,
+      },
+    }
+  };
+
+  action "embedding.create" appliesTo {
+    principal: Principal,
+    resource:  Request,
+    context: {
+      model:                     String,
+      risk_level:                String,
+      streaming:                 Bool,
+      pii_detected:              Bool,
+      tool_name:                 String,
+      tool_names:                Set<String>,
+      tool_count:                Long,
+      requested_tools:           Set<String>,
+      budget_remaining_cents:    Long,
+      budget_utilization_pct:    Long,
+      injection_detected:        Bool,
+      jailbreak_detected:        Bool,
+      threat_detected:           Bool,
+      identity_claim_detected:   Bool,
+      confidential_detected:     Bool,
+      exfiltration_detected:     Bool,
+      exfiltration_type:         String,
+      unauthorized_tool_detected:     Bool,
+      tool_categories:                String,
+      tool_highest_risk_category:     String,
+      tool_allowlist_mode:            Bool,
+
+      // Namespaced control facts (new — coexists with flat fields during migration)
+      agent_integrity: {
+          injection_detected: Bool,
+          injection_score: Long,
+          injection_type: String,
+          jailbreak_detected: Bool,
+          jailbreak_score: Long,
+      },
+      data_protection: {
+          pii_present: Bool,
+          pii_count: Long,
+          confidential_detected: Bool,
+          exfiltration_detected: Bool,
+          exfiltration_risk: Long,
+          exfiltration_url_count: Long,
+      },
+      content_safety: {
+          threat_detected: Bool,
+          threat_score: Long,
+          toxicity_score: Long,
+      },
+      identity_safety: {
+          disclosure_detected: Bool,
+      },
+      tool_governance: {
+          unauthorized_detected: Bool,
+          highest_risk: String,
+      },
+      supply_chain: {
+          mcp_server_approved: Bool,
+          mcp_server_id: String,
+      },
+    }
+  };
+
+  action "image.generate" appliesTo {
+    principal: Principal,
+    resource:  Request,
+    context: {
+      model:                     String,
+      risk_level:                String,
+      streaming:                 Bool,
+      pii_detected:              Bool,
+      tool_name:                 String,
+      tool_names:                Set<String>,
+      tool_count:                Long,
+      requested_tools:           Set<String>,
+      budget_remaining_cents:    Long,
+      budget_utilization_pct:    Long,
+      injection_detected:        Bool,
+      jailbreak_detected:        Bool,
+      threat_detected:           Bool,
+      identity_claim_detected:   Bool,
+      confidential_detected:     Bool,
+      exfiltration_detected:     Bool,
+      exfiltration_type:         String,
+      unauthorized_tool_detected:     Bool,
+      tool_categories:                String,
+      tool_highest_risk_category:     String,
+      tool_allowlist_mode:            Bool,
+
+      // Namespaced control facts (new — coexists with flat fields during migration)
+      agent_integrity: {
+          injection_detected: Bool,
+          injection_score: Long,
+          injection_type: String,
+          jailbreak_detected: Bool,
+          jailbreak_score: Long,
+      },
+      data_protection: {
+          pii_present: Bool,
+          pii_count: Long,
+          confidential_detected: Bool,
+          exfiltration_detected: Bool,
+          exfiltration_risk: Long,
+          exfiltration_url_count: Long,
+      },
+      content_safety: {
+          threat_detected: Bool,
+          threat_score: Long,
+          toxicity_score: Long,
+      },
+      identity_safety: {
+          disclosure_detected: Bool,
+      },
+      tool_governance: {
+          unauthorized_detected: Bool,
+          highest_risk: String,
+      },
+      supply_chain: {
+          mcp_server_approved: Bool,
+          mcp_server_id: String,
+      },
+    }
+  };
+
+  action "models.list" appliesTo {
+    principal: Principal,
+    resource:  Request,
+    context: {
+      model:                     String,
+      risk_level:                String,
+      streaming:                 Bool,
+      pii_detected:              Bool,
+      tool_name:                 String,
+      tool_names:                Set<String>,
+      tool_count:                Long,
+      requested_tools:           Set<String>,
+      budget_remaining_cents:    Long,
+      budget_utilization_pct:    Long,
+      injection_detected:        Bool,
+      jailbreak_detected:        Bool,
+      threat_detected:           Bool,
+      identity_claim_detected:   Bool,
+      confidential_detected:     Bool,
+      exfiltration_detected:     Bool,
+      exfiltration_type:         String,
+      unauthorized_tool_detected:     Bool,
+      tool_categories:                String,
+      tool_highest_risk_category:     String,
+      tool_allowlist_mode:            Bool,
+
+      // Namespaced control facts (new — coexists with flat fields during migration)
+      agent_integrity: {
+          injection_detected: Bool,
+          injection_score: Long,
+          injection_type: String,
+          jailbreak_detected: Bool,
+          jailbreak_score: Long,
+      },
+      data_protection: {
+          pii_present: Bool,
+          pii_count: Long,
+          confidential_detected: Bool,
+          exfiltration_detected: Bool,
+          exfiltration_risk: Long,
+          exfiltration_url_count: Long,
+      },
+      content_safety: {
+          threat_detected: Bool,
+          threat_score: Long,
+          toxicity_score: Long,
+      },
+      identity_safety: {
+          disclosure_detected: Bool,
+      },
+      tool_governance: {
+          unauthorized_detected: Bool,
+          highest_risk: String,
+      },
+      supply_chain: {
+          mcp_server_approved: Bool,
+          mcp_server_id: String,
+      },
+    }
+  };
+}
