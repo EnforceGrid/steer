@@ -141,7 +141,7 @@ Point your SDK's `base_url` at `http://localhost:8080`. No other changes needed.
 
 ```bash
 curl http://localhost:8080/health
-# → {"status":"ok"}
+# → {"status":"ok","version":"0.1.0","service":"steer","requests_total":0,"uptime_s":4}
 
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -295,7 +295,7 @@ Load-tested with k6 against a 60ms mock upstream on the same Apple M-series hard
 
 | Max VUs | Peak RPS | Error rate | p50 | p95 |
 |---|---|---|---|---|
-| **750** | **1,374 req/s** | **0.00%** | 351 ms | 725 ms |
+| **750** | **1,374 req/s** | **zero** | 351 ms | 725 ms |
 | 1,500 | 1,401 req/s | 10.8% | 716 ms | 1,555 ms |
 
 At 750 VUs errors are zero — that is the clean operating range on shared hardware. Errors appear at 1,500 VUs when the laptop CPU saturates across all three processes, not a Steer-specific bottleneck. On a dedicated server with k6 running externally, throughput scales substantially higher. Upstream LLM rate limits (typically 500–10,000 RPM) are the practical binding constraint before Steer saturates.
