@@ -1,7 +1,7 @@
-pub mod openai;
 pub mod anthropic;
-pub mod gemini;
 pub mod bedrock;
+pub mod gemini;
+pub mod openai;
 
 use bytes::Bytes;
 

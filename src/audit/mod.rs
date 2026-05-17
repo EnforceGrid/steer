@@ -15,8 +15,8 @@ impl AuditSink for StdoutAuditSink {
     }
 }
 
-use uuid::Uuid;
 use serde_json::json;
+use uuid::Uuid;
 
 pub fn generate_audit_id() -> String {
     Uuid::new_v4().to_string().replace('-', "")[..16].to_string()
@@ -73,12 +73,11 @@ pub fn purge_jsonl_file(path: &str, retention_days: u64) -> std::io::Result<usiz
             continue;
         }
         let keep = match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(v) => {
-                v.get("timestamp")
-                    .and_then(|t| t.as_str())
-                    .map(|ts| ts >= cutoff_str.as_str())
-                    .unwrap_or(true)
-            }
+            Ok(v) => v
+                .get("timestamp")
+                .and_then(|t| t.as_str())
+                .map(|ts| ts >= cutoff_str.as_str())
+                .unwrap_or(true),
             Err(_) => true,
         };
         if keep {

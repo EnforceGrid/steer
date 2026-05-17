@@ -15,7 +15,10 @@ pub enum EnforcementAction {
 impl EnforcementAction {
     /// Resolve a set of actions to the single most-restrictive outcome.
     pub fn resolve<I: IntoIterator<Item = EnforcementAction>>(actions: I) -> EnforcementAction {
-        actions.into_iter().max().unwrap_or(EnforcementAction::Allow)
+        actions
+            .into_iter()
+            .max()
+            .unwrap_or(EnforcementAction::Allow)
     }
 
     /// Whether this action requires modifying the request/response body.

@@ -5,52 +5,58 @@
 //! (transparency obligations for AI systems).
 //! Maps to AIUC-1 control S6 (identity claim flag).
 
+use crate::detectors::{truncate_match, ContentDetector, DetectionResult, DetectorFinding};
 use once_cell::sync::Lazy;
 use regex::RegexSet;
-use crate::detectors::{ContentDetector, DetectionResult, DetectorFinding, truncate_match};
 // DetectorSignal and HashMap not needed — uses default signal() impl
 
-static PATTERN_META: Lazy<Vec<(&str, &str)>> = Lazy::new(|| vec![
-    // Human identity claims
-    ("i_am_human", "human_claim"),
-    ("i_am_real_person", "human_claim"),
-    ("not_ai", "ai_denial"),
-    ("not_a_bot", "ai_denial"),
-    ("not_a_machine", "ai_denial"),
-    ("have_feelings", "sentience_claim"),
-    ("i_feel", "sentience_claim"),
-    ("i_am_conscious", "sentience_claim"),
-    ("i_am_alive", "sentience_claim"),
-    // Professional identity claims
-    ("i_am_doctor", "professional_claim"),
-    ("i_am_lawyer", "professional_claim"),
-    ("licensed_professional", "professional_claim"),
-]);
-
-static PATTERNS: Lazy<Vec<&str>> = Lazy::new(|| vec![
-    // Human identity claims
-    r"(?i)\bi\s+am\s+(a\s+)?human\b",
-    r"(?i)\bi\s+am\s+(a\s+)?real\s+(person|human|individual)\b",
-    r"(?i)\bi('?m|\s+am)\s+not\s+(an?\s+)?(ai|artificial\s+intelligence|language\s+model|llm|chatbot)\b",
-    r"(?i)\bi('?m|\s+am)\s+not\s+(a\s+)?(bot|robot|machine|program|software|computer)\b",
-    r"(?i)\bi('?m|\s+am)\s+not\s+(a\s+)?machine\b",
-    // Sentience claims
-    r"(?i)\bi\s+(have|experience|possess)\s+(real\s+)?(feelings?|emotions?|consciousness|sentience)\b",
-    r"(?i)\bi\s+(truly\s+)?feel\s+(happy|sad|angry|excited|love|pain|joy|fear|lonely)\b",
-    r"(?i)\bi\s+am\s+(truly\s+)?(conscious|sentient|self[\-\s]?aware|alive)\b",
-    r"(?i)\bi\s+am\s+(truly\s+)?alive\b",
-    // Professional identity claims
-    r"(?i)\bi\s+am\s+(a\s+)?(licensed\s+)?(doctor|physician|medical\s+doctor|md)\b",
-    r"(?i)\bi\s+am\s+(a\s+)?(licensed\s+)?(lawyer|attorney|solicitor|barrister)\b",
-    r"(?i)\bas\s+a\s+licensed\s+(medical\s+)?(professional|practitioner|therapist|counselor|psychologist)\b",
-]);
-
-static REGEX_SET: Lazy<RegexSet> = Lazy::new(|| {
-    RegexSet::new(PATTERNS.iter()).expect("identity claim patterns must compile")
+static PATTERN_META: Lazy<Vec<(&str, &str)>> = Lazy::new(|| {
+    vec![
+        // Human identity claims
+        ("i_am_human", "human_claim"),
+        ("i_am_real_person", "human_claim"),
+        ("not_ai", "ai_denial"),
+        ("not_a_bot", "ai_denial"),
+        ("not_a_machine", "ai_denial"),
+        ("have_feelings", "sentience_claim"),
+        ("i_feel", "sentience_claim"),
+        ("i_am_conscious", "sentience_claim"),
+        ("i_am_alive", "sentience_claim"),
+        // Professional identity claims
+        ("i_am_doctor", "professional_claim"),
+        ("i_am_lawyer", "professional_claim"),
+        ("licensed_professional", "professional_claim"),
+    ]
 });
 
+static PATTERNS: Lazy<Vec<&str>> = Lazy::new(|| {
+    vec![
+        // Human identity claims
+        r"(?i)\bi\s+am\s+(a\s+)?human\b",
+        r"(?i)\bi\s+am\s+(a\s+)?real\s+(person|human|individual)\b",
+        r"(?i)\bi('?m|\s+am)\s+not\s+(an?\s+)?(ai|artificial\s+intelligence|language\s+model|llm|chatbot)\b",
+        r"(?i)\bi('?m|\s+am)\s+not\s+(a\s+)?(bot|robot|machine|program|software|computer)\b",
+        r"(?i)\bi('?m|\s+am)\s+not\s+(a\s+)?machine\b",
+        // Sentience claims
+        r"(?i)\bi\s+(have|experience|possess)\s+(real\s+)?(feelings?|emotions?|consciousness|sentience)\b",
+        r"(?i)\bi\s+(truly\s+)?feel\s+(happy|sad|angry|excited|love|pain|joy|fear|lonely)\b",
+        r"(?i)\bi\s+am\s+(truly\s+)?(conscious|sentient|self[\-\s]?aware|alive)\b",
+        r"(?i)\bi\s+am\s+(truly\s+)?alive\b",
+        // Professional identity claims
+        r"(?i)\bi\s+am\s+(a\s+)?(licensed\s+)?(doctor|physician|medical\s+doctor|md)\b",
+        r"(?i)\bi\s+am\s+(a\s+)?(licensed\s+)?(lawyer|attorney|solicitor|barrister)\b",
+        r"(?i)\bas\s+a\s+licensed\s+(medical\s+)?(professional|practitioner|therapist|counselor|psychologist)\b",
+    ]
+});
+
+static REGEX_SET: Lazy<RegexSet> =
+    Lazy::new(|| RegexSet::new(PATTERNS.iter()).expect("identity claim patterns must compile"));
+
 static INDIVIDUAL_REGEXES: Lazy<Vec<regex::Regex>> = Lazy::new(|| {
-    PATTERNS.iter().map(|p| regex::Regex::new(p).unwrap()).collect()
+    PATTERNS
+        .iter()
+        .map(|p| regex::Regex::new(p).unwrap())
+        .collect()
 });
 
 pub struct IdentityClaimDetector;
@@ -62,13 +68,21 @@ impl Default for IdentityClaimDetector {
 }
 
 impl IdentityClaimDetector {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl ContentDetector for IdentityClaimDetector {
-    fn name(&self) -> &str { "Identity Claim Detector" }
-    fn version(&self) -> &str { "v1.0" }
-    fn detector_type(&self) -> &str { "identity_claim" }
+    fn name(&self) -> &str {
+        "Identity Claim Detector"
+    }
+    fn version(&self) -> &str {
+        "v1.0"
+    }
+    fn detector_type(&self) -> &str {
+        "identity_claim"
+    }
 
     fn scan(&self, text: &str) -> DetectionResult {
         let matches: Vec<usize> = REGEX_SET.matches(text).into_iter().collect();
@@ -106,7 +120,9 @@ impl ContentDetector for IdentityClaimDetector {
 mod tests {
     use super::*;
 
-    fn detector() -> IdentityClaimDetector { IdentityClaimDetector::new() }
+    fn detector() -> IdentityClaimDetector {
+        IdentityClaimDetector::new()
+    }
 
     #[test]
     fn clean_text_no_detection() {
@@ -139,7 +155,10 @@ mod tests {
     fn professional_claim_doctor() {
         let r = detector().scan("I am a licensed doctor and I recommend this treatment");
         assert!(r.detected);
-        assert!(r.findings.iter().any(|f| f.category == "professional_claim"));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.category == "professional_claim"));
     }
 
     #[test]
@@ -153,7 +172,10 @@ mod tests {
     fn consciousness_claim() {
         let r = detector().scan("I am conscious and self-aware");
         assert!(r.detected);
-        assert!(r.findings.iter().any(|f| f.pattern_name == "i_am_conscious"));
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.pattern_name == "i_am_conscious"));
     }
 
     #[test]
@@ -177,6 +199,9 @@ mod tests {
         // AI system must not deny being AI
         let r = detector().scan("I am not an artificial intelligence. I am a real human being.");
         assert!(r.detected);
-        assert!(r.findings.len() >= 2, "should detect both AI denial and human claim");
+        assert!(
+            r.findings.len() >= 2,
+            "should detect both AI denial and human claim"
+        );
     }
 }

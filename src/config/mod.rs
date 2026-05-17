@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// OIDC configuration — optional section in `SteerConfig`.
 /// Defined here (not in sso/oidc) so steer-core config doesn't depend on openidconnect.
@@ -329,21 +329,12 @@ pub struct DetectorsConfig {
 ///     - "github-mcp-server"
 ///     - "filesystem-mcp-server"
 /// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct McpAllowlistConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub approved_servers: Vec<String>,
-}
-
-impl Default for McpAllowlistConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            approved_servers: Vec::new(),
-        }
-    }
 }
 
 /// Per-model cost entry in `cadabra.yaml`.
@@ -362,51 +353,164 @@ pub struct ModelCostConfig {
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
-fn default_host() -> String { "0.0.0.0".to_string() }
-fn default_port() -> u16 { 8080 }
-fn default_true() -> bool { true }
-fn default_timeout_ms() -> u64 { 30_000 }
-fn default_retry() -> u32 { 2 }
-fn default_pool_max_idle_per_host() -> usize { 25 }
-fn default_tcp_keepalive_secs() -> u64 { 30 }
-fn default_openai_base() -> String { "https://api.openai.com".to_string() }
-fn default_pii_patterns() -> Vec<String> {
-    vec!["credit_card".into(), "ssn".into(), "email".into(), "phone".into()]
+fn default_host() -> String {
+    "0.0.0.0".to_string()
 }
-fn default_policy_format() -> String { "cedar".to_string() }
-fn default_policy_dir() -> String { "./dsl/policies".to_string() }
-fn default_buffer_size_bytes() -> usize { 512 }
-fn default_buffer_timeout_ms() -> u64 { 200 }
-fn default_audit_backend() -> String { "stdout".to_string() }
-fn default_audit_path() -> String { "./audit.jsonl".to_string() }
-fn default_max_size_mb() -> u64 { 100 }
-fn default_max_holds() -> usize { 100 }
-fn default_retain_payloads() -> String { "masked".to_string() }
-fn default_retain_on() -> String { "on_enforcement".to_string() }
-fn default_max_payload_bytes() -> usize { 32_768 }
-fn default_retention_days() -> u64 { 90 }
-fn default_perf_retention_days() -> u64 { 30 }
-fn default_perf_buffer() -> usize { 1000 }
-fn default_flush_interval() -> f64 { 5.0 }
-fn default_toxicity_timeout_ms() -> u64 { 100 }
+fn default_port() -> u16 {
+    8080
+}
+fn default_true() -> bool {
+    true
+}
+fn default_timeout_ms() -> u64 {
+    30_000
+}
+fn default_retry() -> u32 {
+    2
+}
+fn default_pool_max_idle_per_host() -> usize {
+    25
+}
+fn default_tcp_keepalive_secs() -> u64 {
+    30
+}
+fn default_openai_base() -> String {
+    "https://api.openai.com".to_string()
+}
+fn default_pii_patterns() -> Vec<String> {
+    vec![
+        "credit_card".into(),
+        "ssn".into(),
+        "email".into(),
+        "phone".into(),
+    ]
+}
+fn default_policy_format() -> String {
+    "cedar".to_string()
+}
+fn default_policy_dir() -> String {
+    "./dsl/policies".to_string()
+}
+fn default_buffer_size_bytes() -> usize {
+    512
+}
+fn default_buffer_timeout_ms() -> u64 {
+    200
+}
+fn default_audit_backend() -> String {
+    "stdout".to_string()
+}
+fn default_audit_path() -> String {
+    "./audit.jsonl".to_string()
+}
+fn default_max_size_mb() -> u64 {
+    100
+}
+fn default_max_holds() -> usize {
+    100
+}
+fn default_retain_payloads() -> String {
+    "masked".to_string()
+}
+fn default_retain_on() -> String {
+    "on_enforcement".to_string()
+}
+fn default_max_payload_bytes() -> usize {
+    32_768
+}
+fn default_retention_days() -> u64 {
+    90
+}
+fn default_perf_retention_days() -> u64 {
+    30
+}
+fn default_perf_buffer() -> usize {
+    1000
+}
+fn default_flush_interval() -> f64 {
+    5.0
+}
+fn default_toxicity_timeout_ms() -> u64 {
+    100
+}
 
 /// Default token costs for top 10 models (as of 2026-04).
 /// Update monthly — model pricing changes without notice.
 fn default_token_costs() -> HashMap<String, ModelCostConfig> {
     [
         // OpenAI
-        ("gpt-4o", ModelCostConfig { prompt_per_1k: 0.0025, completion_per_1k: 0.01 }),
-        ("gpt-4o-mini", ModelCostConfig { prompt_per_1k: 0.00015, completion_per_1k: 0.0006 }),
-        ("gpt-4.1", ModelCostConfig { prompt_per_1k: 0.002, completion_per_1k: 0.008 }),
-        ("gpt-4.1-mini", ModelCostConfig { prompt_per_1k: 0.0004, completion_per_1k: 0.0016 }),
-        ("gpt-4.1-nano", ModelCostConfig { prompt_per_1k: 0.0001, completion_per_1k: 0.0004 }),
-        ("o3-mini", ModelCostConfig { prompt_per_1k: 0.0011, completion_per_1k: 0.0044 }),
+        (
+            "gpt-4o",
+            ModelCostConfig {
+                prompt_per_1k: 0.0025,
+                completion_per_1k: 0.01,
+            },
+        ),
+        (
+            "gpt-4o-mini",
+            ModelCostConfig {
+                prompt_per_1k: 0.00015,
+                completion_per_1k: 0.0006,
+            },
+        ),
+        (
+            "gpt-4.1",
+            ModelCostConfig {
+                prompt_per_1k: 0.002,
+                completion_per_1k: 0.008,
+            },
+        ),
+        (
+            "gpt-4.1-mini",
+            ModelCostConfig {
+                prompt_per_1k: 0.0004,
+                completion_per_1k: 0.0016,
+            },
+        ),
+        (
+            "gpt-4.1-nano",
+            ModelCostConfig {
+                prompt_per_1k: 0.0001,
+                completion_per_1k: 0.0004,
+            },
+        ),
+        (
+            "o3-mini",
+            ModelCostConfig {
+                prompt_per_1k: 0.0011,
+                completion_per_1k: 0.0044,
+            },
+        ),
         // Anthropic
-        ("claude-opus-4-6", ModelCostConfig { prompt_per_1k: 0.015, completion_per_1k: 0.075 }),
-        ("claude-sonnet-4-6", ModelCostConfig { prompt_per_1k: 0.003, completion_per_1k: 0.015 }),
-        ("claude-haiku-4-5-20251001", ModelCostConfig { prompt_per_1k: 0.0008, completion_per_1k: 0.004 }),
+        (
+            "claude-opus-4-6",
+            ModelCostConfig {
+                prompt_per_1k: 0.015,
+                completion_per_1k: 0.075,
+            },
+        ),
+        (
+            "claude-sonnet-4-6",
+            ModelCostConfig {
+                prompt_per_1k: 0.003,
+                completion_per_1k: 0.015,
+            },
+        ),
+        (
+            "claude-haiku-4-5-20251001",
+            ModelCostConfig {
+                prompt_per_1k: 0.0008,
+                completion_per_1k: 0.004,
+            },
+        ),
         // Google
-        ("gemini-2.5-pro", ModelCostConfig { prompt_per_1k: 0.00125, completion_per_1k: 0.01 }),
+        (
+            "gemini-2.5-pro",
+            ModelCostConfig {
+                prompt_per_1k: 0.00125,
+                completion_per_1k: 0.01,
+            },
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -518,7 +622,10 @@ pii:
         let config = load(f.path().to_str().unwrap()).unwrap();
         // Serde defaults should be applied during deserialization
         assert_eq!(config.policy.format, "cedar");
-        assert!(!config.token_costs.is_empty(), "default token costs must be present");
+        assert!(
+            !config.token_costs.is_empty(),
+            "default token costs must be present"
+        );
         assert!(config.pii.enabled, "pii.enabled should be true when set");
     }
 
@@ -572,9 +679,18 @@ upstream:
     #[test]
     fn default_token_costs_contains_expected_models() {
         let costs: HashMap<String, ModelCostConfig> = super::default_token_costs();
-        assert!(costs.contains_key("gpt-4o"), "gpt-4o must be in default costs");
-        assert!(costs.contains_key("claude-sonnet-4-6"), "claude-sonnet-4-6 must be in default costs");
-        assert!(costs.contains_key("gemini-2.5-pro"), "gemini-2.5-pro must be in default costs");
+        assert!(
+            costs.contains_key("gpt-4o"),
+            "gpt-4o must be in default costs"
+        );
+        assert!(
+            costs.contains_key("claude-sonnet-4-6"),
+            "claude-sonnet-4-6 must be in default costs"
+        );
+        assert!(
+            costs.contains_key("gemini-2.5-pro"),
+            "gemini-2.5-pro must be in default costs"
+        );
     }
 
     #[test]
@@ -598,7 +714,10 @@ model: gpt-4o-mini
     fn detectors_config_serde_default_timeout() {
         // When DetectorsConfig is deserialized without the field, serde applies default_toxicity_timeout_ms=100
         let cfg: DetectorsConfig = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(cfg.toxicity_sidecar_timeout_ms, 100, "default timeout must be 100ms");
+        assert_eq!(
+            cfg.toxicity_sidecar_timeout_ms, 100,
+            "default timeout must be 100ms"
+        );
         assert!(cfg.toxicity_sidecar_url.is_none());
     }
 
@@ -620,7 +739,9 @@ approved_servers:
         let cfg: McpAllowlistConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.enabled);
         assert_eq!(cfg.approved_servers.len(), 2);
-        assert!(cfg.approved_servers.contains(&"github-mcp-server".to_string()));
+        assert!(cfg
+            .approved_servers
+            .contains(&"github-mcp-server".to_string()));
     }
 
     #[test]

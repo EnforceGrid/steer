@@ -1,7 +1,7 @@
 use anyhow::Context;
 use arc_swap::ArcSwap;
-use axum::{Extension, Router};
 use axum::routing::{get, post};
+use axum::{Extension, Router};
 use clap::Parser;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -13,20 +13,23 @@ use tracing::{info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use steer_core::config::SteerConfig;
+use steer_core::detectors::tool_governance::{ToolGovernanceConfig, ToolGovernanceDetector};
 use steer_core::detectors::ContentDetector;
 use steer_core::handover::HoldStore;
-use steer_core::middleware::{InFlightLayer, MAX_IN_FLIGHT};
 use steer_core::mcp_registry::{McpRegistryProvider, McpServerRegistry};
+use steer_core::middleware::{InFlightLayer, MAX_IN_FLIGHT};
 use steer_core::performance::{AnomalyProvider, NoopAnomaly, NoopPerformance, PerformanceProvider};
-use steer_core::pipeline::PipelineState;
 use steer_core::pii::RegexPiiEngine;
+use steer_core::pipeline::PipelineState;
 use steer_core::policy::cedar::CedarEngine;
-use steer_core::policy::registry::{PolicyRegistryBackend, TenantPolicyConfig, TenantPolicyRegistry};
+use steer_core::policy::registry::{
+    PolicyRegistryBackend, TenantPolicyConfig, TenantPolicyRegistry,
+};
 use steer_core::policy::watcher::PolicyWatcher;
 use steer_core::routes::{chat, eval, health, holds};
 use steer_core::tenants::{
-    policy_config::ManagedPolicyVersion, SingleTenantAuth, SingleTenantSettings, TenantAuthProvider,
-    TenantSettings, TenantSettingsProvider,
+    policy_config::ManagedPolicyVersion, SingleTenantAuth, SingleTenantSettings,
+    TenantAuthProvider, TenantSettings, TenantSettingsProvider,
 };
 use steer_core::tokens::{BudgetCache, CostEstimator, ModelCost, NoopTokenProvider, TokenProvider};
 
@@ -112,7 +115,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    if std::env::var("STEER_API_KEY").ok().filter(|s| !s.is_empty()).is_none() {
+    if std::env::var("STEER_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
         warn!("STEER_API_KEY is not set — all endpoints are unauthenticated. Do NOT run in production.");
     }
     if config.proxy.fail_open {
@@ -148,7 +155,9 @@ async fn main() -> anyhow::Result<()> {
         let policy_cfg = config.policy.clone();
         tokio::spawn(async move {
             match PolicyWatcher::new(policy_cfg, swap) {
-                Ok(mut w) => { let _ = w.run().await; }
+                Ok(mut w) => {
+                    let _ = w.run().await;
+                }
                 Err(e) => warn!(error = %e, "policy watcher failed to start"),
             }
         });
@@ -162,16 +171,21 @@ async fn main() -> anyhow::Result<()> {
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(config.proxy.timeout_ms))
         .pool_max_idle_per_host(config.proxy.pool_max_idle_per_host)
-        .tcp_keepalive(std::time::Duration::from_secs(config.proxy.tcp_keepalive_secs))
+        .tcp_keepalive(std::time::Duration::from_secs(
+            config.proxy.tcp_keepalive_secs,
+        ))
         .build()?;
 
     let cost_estimator = {
         let mut costs = HashMap::new();
         for (model, cfg) in &config.token_costs {
-            costs.insert(model.clone(), ModelCost {
-                prompt_per_1k: cfg.prompt_per_1k,
-                completion_per_1k: cfg.completion_per_1k,
-            });
+            costs.insert(
+                model.clone(),
+                ModelCost {
+                    prompt_per_1k: cfg.prompt_per_1k,
+                    completion_per_1k: cfg.completion_per_1k,
+                },
+            );
         }
         Arc::new(CostEstimator::new(costs))
     };
@@ -179,6 +193,15 @@ async fn main() -> anyhow::Result<()> {
     let budget_cache = Arc::new(BudgetCache::new());
     let hold_store = HoldStore::new(config.handover.max_concurrent_holds);
     let mcp_registry: Arc<dyn McpRegistryProvider> = Arc::new(McpServerRegistry::new());
+
+    let tool_governance = {
+        use std::collections::HashSet;
+        let tg = &config.detectors.tool_governance;
+        ToolGovernanceDetector::new(ToolGovernanceConfig {
+            allowed_tools: tg.allowed_tools.iter().cloned().collect::<HashSet<_>>(),
+            block_in_allowlist_mode: tg.block_in_allowlist_mode,
+        })
+    };
 
     let state = Arc::new(PipelineState {
         config: Arc::clone(&config),
@@ -195,11 +218,13 @@ async fn main() -> anyhow::Result<()> {
         tenant_auth: Arc::new(SingleTenantAuth) as Arc<dyn TenantAuthProvider>,
         tenant_id_cache: dashmap::DashMap::new(),
         sync_cache: Arc::new(dashmap::DashMap::new()),
-        tenant_settings: Arc::new(SingleTenantSettings { settings: TenantSettings::default() })
-            as Arc<dyn TenantSettingsProvider>,
+        tenant_settings: Arc::new(SingleTenantSettings {
+            settings: TenantSettings::default(),
+        }) as Arc<dyn TenantSettingsProvider>,
         anomaly: Arc::new(NoopAnomaly) as Arc<dyn AnomalyProvider>,
         kill_switch: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         mcp_registry: Arc::clone(&mcp_registry),
+        tool_governance,
     });
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT));
@@ -237,7 +262,8 @@ async fn main() -> anyhow::Result<()> {
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         semaphore.acquire_many(MAX_IN_FLIGHT as u32),
-    ).await;
+    )
+    .await;
 
     info!("steer stopped");
     Ok(())
@@ -245,7 +271,9 @@ async fn main() -> anyhow::Result<()> {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
     };
     #[cfg(unix)]
     let terminate = async {

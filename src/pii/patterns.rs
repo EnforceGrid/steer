@@ -25,11 +25,8 @@ pub static CREDIT_CARD: PiiPattern = pii_pattern!(
     "[REDACTED_CREDIT_CARD]"
 );
 
-pub static SSN: PiiPattern = pii_pattern!(
-    "ssn",
-    r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b",
-    "[REDACTED_SSN]"
-);
+pub static SSN: PiiPattern =
+    pii_pattern!("ssn", r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b", "[REDACTED_SSN]");
 
 pub static EMAIL: PiiPattern = pii_pattern!(
     "email",
@@ -152,15 +149,28 @@ pub static GOOGLE_API_KEY: PiiPattern = pii_pattern!(
 pub fn all_patterns() -> Vec<&'static PiiPattern> {
     vec![
         // Personal data
-        &CREDIT_CARD, &SSN, &EMAIL, &PHONE, &PHONE_INTL, &IP_ADDRESS,
+        &CREDIT_CARD,
+        &SSN,
+        &EMAIL,
+        &PHONE,
+        &PHONE_INTL,
+        &IP_ADDRESS,
         // Financial
         &IBAN,
         // Auth tokens — specific patterns before generic to get accurate labels
-        &ANTHROPIC_KEY, &OPENAI_KEY, &AWS_ACCESS_KEY, &AWS_SECRET_KEY,
-        &GITHUB_TOKEN, &SLACK_TOKEN, &STRIPE_KEY,
-        &JWT, &BEARER_TOKEN, &GENERIC_SECRET,
+        &ANTHROPIC_KEY,
+        &OPENAI_KEY,
+        &AWS_ACCESS_KEY,
+        &AWS_SECRET_KEY,
+        &GITHUB_TOKEN,
+        &SLACK_TOKEN,
+        &STRIPE_KEY,
+        &JWT,
+        &BEARER_TOKEN,
+        &GENERIC_SECRET,
         // Cloud provider keys
-        &AZURE_KEY, &GOOGLE_API_KEY,
+        &AZURE_KEY,
+        &GOOGLE_API_KEY,
     ]
 }
 
@@ -233,7 +243,10 @@ mod tests {
 
     #[test]
     fn github_token_matches() {
-        assert!(matches(&GITHUB_TOKEN, "token ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx1234"));
+        assert!(matches(
+            &GITHUB_TOKEN,
+            "token ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx1234"
+        ));
     }
 
     #[test]
@@ -243,12 +256,18 @@ mod tests {
 
     #[test]
     fn bearer_token_matches() {
-        assert!(matches(&BEARER_TOKEN, "use Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxxx"));
+        assert!(matches(
+            &BEARER_TOKEN,
+            "use Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxxx"
+        ));
     }
 
     #[test]
     fn generic_secret_matches() {
-        assert!(matches(&GENERIC_SECRET, r#"api_key="sk_test_abcdef1234567890""#));
+        assert!(matches(
+            &GENERIC_SECRET,
+            r#"api_key="sk_test_abcdef1234567890""#
+        ));
         assert!(matches(&GENERIC_SECRET, "password=SuperSecretPass1234!"));
     }
 
@@ -301,7 +320,11 @@ mod tests {
         // 64 base64 alphabet chars + 22 uppercase = ABCDEFGHIJKLMNOPQRSTUV = 86.
         let key = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/ABCDEFGHIJKLMNOPQRSTUV==";
         // Verify length at compile time via the assertion.
-        assert_eq!(key.len(), 88, "key string must be 88 chars (86 base64 + ==)");
+        assert_eq!(
+            key.len(),
+            88,
+            "key string must be 88 chars (86 base64 + ==)"
+        );
         assert!(matches(&AZURE_KEY, &format!("key {key}")));
     }
 
@@ -325,6 +348,9 @@ mod tests {
 
     #[test]
     fn google_api_key_wrong_prefix_no_match() {
-        assert!(!matches(&GOOGLE_API_KEY, "key BIzaSyD-9tSrke72Jiz2siaB_XABCDEFGHIJKlm ok"));
+        assert!(!matches(
+            &GOOGLE_API_KEY,
+            "key BIzaSyD-9tSrke72Jiz2siaB_XABCDEFGHIJKlm ok"
+        ));
     }
 }

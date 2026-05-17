@@ -1,0 +1,40 @@
+proxy:
+  host: "127.0.0.1"
+  port: 8080
+  fail_open: true
+  timeout_ms: 30000
+  retry_attempts: 0
+
+upstream:
+  base_url: "http://127.0.0.1:9999"
+  api_key: "fake-key"
+
+providers:
+  openai:
+    base_url: "http://127.0.0.1:9999"
+    api_key: "fake-key"
+
+pii:
+  enabled: true
+  patterns:
+    - credit_card
+    - ssn
+    - email
+    - phone
+    - phone_intl
+
+policy:
+  format: cedar
+  policy_dir: "./dsl/policies"
+
+streaming:
+  enabled: false
+
+audit:
+  backend: none
+
+handover:
+  enabled: false
+
+performance:
+  enabled: false

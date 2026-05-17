@@ -1,6 +1,6 @@
 pub mod policy_config;
 
-pub use policy_config::{TenantPolicyConfig, ManagedPolicyVersion, CURRENT_MANAGED_VERSION};
+pub use policy_config::{ManagedPolicyVersion, TenantPolicyConfig, CURRENT_MANAGED_VERSION};
 
 use anyhow::Result;
 

@@ -9,10 +9,10 @@ use once_cell::sync::Lazy;
 use serde_json::Value;
 use tracing::{debug, warn};
 
-use crate::config::PolicyConfig;
-use crate::error::{SteerError, SteerResult};
 use super::action::EnforcementAction;
 use super::{PolicyCoverageEntry, PolicyDecision, PolicyEngine};
+use crate::config::PolicyConfig;
+use crate::error::{SteerError, SteerResult};
 
 // ── Static EnforceGrid schema (parsed once at startup) ───────────────────────
 // Used by validate_with_schema() to catch mis-typed context field references
@@ -37,9 +37,8 @@ static ENFORCED_SCHEMA: Lazy<Option<Schema>> = Lazy::new(|| {
 static PRINCIPAL_TYPE: Lazy<EntityTypeName> = Lazy::new(|| {
     EntityTypeName::from_str("EnforceGrid::Principal").expect("static entity type name")
 });
-static ACTION_TYPE: Lazy<EntityTypeName> = Lazy::new(|| {
-    EntityTypeName::from_str("EnforceGrid::Action").expect("static entity type name")
-});
+static ACTION_TYPE: Lazy<EntityTypeName> =
+    Lazy::new(|| EntityTypeName::from_str("EnforceGrid::Action").expect("static entity type name"));
 static REQUEST_RESOURCE_TYPE: Lazy<EntityTypeName> = Lazy::new(|| {
     EntityTypeName::from_str("EnforceGrid::Request").expect("static entity type name")
 });
@@ -70,8 +69,9 @@ impl CedarEngine {
             entries.sort_by_key(|e| e.path());
 
             for entry in entries {
-                let content = std::fs::read_to_string(entry.path())
-                    .map_err(|e| SteerError::Config(format!("cannot read {:?}: {e}", entry.path())))?;
+                let content = std::fs::read_to_string(entry.path()).map_err(|e| {
+                    SteerError::Config(format!("cannot read {:?}: {e}", entry.path()))
+                })?;
                 combined.push_str(&content);
                 combined.push('\n');
             }
@@ -95,8 +95,7 @@ impl CedarEngine {
     /// Build a permissive engine that allows all traffic.
     /// Used as a safe fallback when tenant policy loading fails.
     pub fn permissive() -> Self {
-        Self::from_policy_str(DEFAULT_POLICY)
-            .expect("DEFAULT_POLICY is always valid Cedar")
+        Self::from_policy_str(DEFAULT_POLICY).expect("DEFAULT_POLICY is always valid Cedar")
     }
 
     /// Load from a [`PolicyConfig`]: uses `policy_file` when set, otherwise
@@ -125,48 +124,65 @@ impl CedarEngine {
 
     /// Return a summary of each policy: (id_annotation, effect, enforcement).
     pub fn policy_summaries(&self) -> Vec<(String, &'static str, String)> {
-        self.policy_set.policies().map(|p| {
-            let id = p.annotation("id").map(String::from)
-                .unwrap_or_else(|| p.id().to_string());
-            let effect = match p.effect() {
-                cedar_policy::Effect::Permit => "permit",
-                cedar_policy::Effect::Forbid => "forbid",
-            };
-            let enforcement = p.annotation("enforcement")
-                .map(String::from)
-                .unwrap_or_else(|| match p.effect() {
-                    cedar_policy::Effect::Permit => "allow".to_string(),
-                    cedar_policy::Effect::Forbid => "block".to_string(),
-                });
-            (id, effect, enforcement)
-        }).collect()
+        self.policy_set
+            .policies()
+            .map(|p| {
+                let id = p
+                    .annotation("id")
+                    .map(String::from)
+                    .unwrap_or_else(|| p.id().to_string());
+                let effect = match p.effect() {
+                    cedar_policy::Effect::Permit => "permit",
+                    cedar_policy::Effect::Forbid => "forbid",
+                };
+                let enforcement = p
+                    .annotation("enforcement")
+                    .map(String::from)
+                    .unwrap_or_else(|| match p.effect() {
+                        cedar_policy::Effect::Permit => "allow".to_string(),
+                        cedar_policy::Effect::Forbid => "block".to_string(),
+                    });
+                (id, effect, enforcement)
+            })
+            .collect()
     }
 
     /// Return per-policy coverage metadata: id, description, enforcement action,
     /// and regulatory framework mappings.  Used by `GET /api/v1/compliance/coverage`
     /// to report which frameworks are covered by the active policy set.
     pub fn policy_coverage(&self) -> Vec<PolicyCoverageEntry> {
-        self.policy_set.policies().filter_map(|p| {
-            let mappings_raw = p.annotation("regulatory_mapping")?;
-            let frameworks: Vec<String> = mappings_raw
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            if frameworks.is_empty() {
-                return None;
-            }
-            let id = p.annotation("id").map(String::from)
-                .unwrap_or_else(|| p.id().to_string());
-            let description = p.annotation("description").map(String::from);
-            let enforcement = p.annotation("enforcement")
-                .map(String::from)
-                .unwrap_or_else(|| match p.effect() {
-                    Effect::Permit => "allow".to_string(),
-                    Effect::Forbid => "block".to_string(),
-                });
-            Some(PolicyCoverageEntry { id, description, enforcement, frameworks })
-        }).collect()
+        self.policy_set
+            .policies()
+            .filter_map(|p| {
+                let mappings_raw = p.annotation("regulatory_mapping")?;
+                let frameworks: Vec<String> = mappings_raw
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if frameworks.is_empty() {
+                    return None;
+                }
+                let id = p
+                    .annotation("id")
+                    .map(String::from)
+                    .unwrap_or_else(|| p.id().to_string());
+                let description = p.annotation("description").map(String::from);
+                let enforcement = p
+                    .annotation("enforcement")
+                    .map(String::from)
+                    .unwrap_or_else(|| match p.effect() {
+                        Effect::Permit => "allow".to_string(),
+                        Effect::Forbid => "block".to_string(),
+                    });
+                Some(PolicyCoverageEntry {
+                    id,
+                    description,
+                    enforcement,
+                    frameworks,
+                })
+            })
+            .collect()
     }
 
     pub fn from_policy_str(policy_text: &str) -> SteerResult<Self> {
@@ -193,11 +209,9 @@ impl CedarEngine {
     /// load at startup (should not happen in a correctly built binary).
     pub fn validate_with_schema(&self) -> Option<Vec<String>> {
         let schema = ENFORCED_SCHEMA.as_ref()?;
-        let result = Validator::new(schema.clone()).validate(&self.policy_set, ValidationMode::Strict);
-        let errors: Vec<String> = result
-            .validation_errors()
-            .map(|e| e.to_string())
-            .collect();
+        let result =
+            Validator::new(schema.clone()).validate(&self.policy_set, ValidationMode::Strict);
+        let errors: Vec<String> = result.validation_errors().map(|e| e.to_string()).collect();
         Some(errors)
     }
 
@@ -205,12 +219,13 @@ impl CedarEngine {
         // Use cached EntityTypeName for the four known static types; fall back
         // to parsing for any other type (e.g., in tests or future extensions).
         let etype = match type_name {
-            "EnforceGrid::Principal"  => PRINCIPAL_TYPE.clone(),
-            "EnforceGrid::Action"     => ACTION_TYPE.clone(),
-            "EnforceGrid::Request"    => REQUEST_RESOURCE_TYPE.clone(),
-            "EnforceGrid::Response"   => RESPONSE_RESOURCE_TYPE.clone(),
-            other => EntityTypeName::from_str(other)
-                .map_err(|e| SteerError::CedarPolicy(format!("invalid entity type '{other}': {e}")))?,
+            "EnforceGrid::Principal" => PRINCIPAL_TYPE.clone(),
+            "EnforceGrid::Action" => ACTION_TYPE.clone(),
+            "EnforceGrid::Request" => REQUEST_RESOURCE_TYPE.clone(),
+            "EnforceGrid::Response" => RESPONSE_RESOURCE_TYPE.clone(),
+            other => EntityTypeName::from_str(other).map_err(|e| {
+                SteerError::CedarPolicy(format!("invalid entity type '{other}': {e}"))
+            })?,
         };
         let eid = EntityId::from_str(id)
             .map_err(|e| SteerError::CedarPolicy(format!("invalid entity id '{id}': {e}")))?;
@@ -237,17 +252,13 @@ impl CedarEngine {
         let context = Context::from_json_value(context_attrs.clone(), None)
             .map_err(|e| SteerError::CedarPolicy(format!("context parse error: {e}")))?;
 
-        let request = Request::new(
-            principal_uid,
-            action_uid,
-            resource_uid,
-            context,
-            None,
-        )
-        .map_err(|e| SteerError::CedarPolicy(format!("request build error: {e}")))?;
+        let request = Request::new(principal_uid, action_uid, resource_uid, context, None)
+            .map_err(|e| SteerError::CedarPolicy(format!("request build error: {e}")))?;
 
         let entities = Entities::empty();
-        let response = self.authorizer.is_authorized(&request, &self.policy_set, &entities);
+        let response = self
+            .authorizer
+            .is_authorized(&request, &self.policy_set, &entities);
 
         debug!(decision = ?response.decision(), "cedar authorization");
 
@@ -269,7 +280,7 @@ impl CedarEngine {
         // Defaults when there are no determining policies or no annotations.
         let default_action = match decision {
             Decision::Allow => EnforcementAction::Allow,
-            Decision::Deny  => EnforcementAction::Block,
+            Decision::Deny => EnforcementAction::Block,
         };
 
         if reason_ids.is_empty() {
@@ -304,11 +315,11 @@ impl CedarEngine {
             // Always use the @enforcement annotation — NOT Cedar's binary effect.
             let action = match policy.annotation("enforcement") {
                 Some(val) => match val.to_lowercase().as_str() {
-                    "allow"     => EnforcementAction::Allow,
+                    "allow" => EnforcementAction::Allow,
                     "transform" => EnforcementAction::Transform,
-                    "flag"      => EnforcementAction::Flag,
-                    "steer"     => EnforcementAction::Steer,
-                    "block"     => EnforcementAction::Block,
+                    "flag" => EnforcementAction::Flag,
+                    "steer" => EnforcementAction::Steer,
+                    "block" => EnforcementAction::Block,
                     other => {
                         warn!(
                             policy_id = %pid,
@@ -331,8 +342,14 @@ impl CedarEngine {
             // has no @id and should not appear in matched_rules.
             let maybe_rule_id = policy.annotation("id").map(String::from);
 
-            let this_regulatory_mapping: Vec<String> = policy.annotation("regulatory_mapping")
-                .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            let this_regulatory_mapping: Vec<String> = policy
+                .annotation("regulatory_mapping")
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
                 .unwrap_or_default();
 
             // Accumulate every authored matched policy — not just the winner.
@@ -340,7 +357,10 @@ impl CedarEngine {
                 matched_rules.push(crate::policy::MatchedRule {
                     rule_id: id.clone(),
                     action: action.to_string(),
-                    category: policy.annotation("category").map(String::from).unwrap_or_default(),
+                    category: policy
+                        .annotation("category")
+                        .map(String::from)
+                        .unwrap_or_default(),
                     regulatory_mapping: this_regulatory_mapping.clone(),
                 });
             }
@@ -382,7 +402,9 @@ impl CedarEngine {
     /// when at least `@transform_pattern` is present.
     fn build_transform_replacement(policy: &cedar_policy::Policy) -> Option<String> {
         let pattern = policy.annotation("transform_pattern")?;
-        let replace = policy.annotation("transform_replace").unwrap_or("[REDACTED]");
+        let replace = policy
+            .annotation("transform_replace")
+            .unwrap_or("[REDACTED]");
         Some(format!("{pattern}\x1f{replace}"))
     }
 }
@@ -453,8 +475,8 @@ pub fn rewrite_enforcement_annotations(cedar_text: &str, mode: &str) -> String {
         return cedar_text.to_string();
     }
 
-    use regex::Regex;
     use once_cell::sync::Lazy;
+    use regex::Regex;
 
     // Match @enforcement("block") or @enforcement("steer")
     static ENFORCEMENT_BLOCK_STEER: Lazy<Regex> = Lazy::new(|| {
@@ -559,7 +581,10 @@ mod tests {
         "#;
         let d = eval(policy, &json!({}));
         assert_eq!(d.action, EnforcementAction::Steer);
-        assert_eq!(d.steer_message.as_deref(), Some("Please contact compliance."));
+        assert_eq!(
+            d.steer_message.as_deref(),
+            Some("Please contact compliance.")
+        );
     }
 
     // 4. @enforcement("flag") on forbid → Flag (not Block)
@@ -623,10 +648,7 @@ mod tests {
     #[test]
     fn fail_open_on_eval_error() {
         // Construct an engine then call evaluate_request, which catches errors.
-        let engine = CedarEngine::from_policy_str(
-            "permit(principal, action, resource);",
-        )
-        .unwrap();
+        let engine = CedarEngine::from_policy_str("permit(principal, action, resource);").unwrap();
 
         // Pass a principal with an invalid entity type to trigger an error
         // inside evaluate_inner.
@@ -659,7 +681,10 @@ mod tests {
         "#;
         let d = eval(policy, &json!({}));
         assert_eq!(d.action, EnforcementAction::Block);
-        assert_eq!(d.description.as_deref(), Some("Prompt injection attempt blocked"));
+        assert_eq!(
+            d.description.as_deref(),
+            Some("Prompt injection attempt blocked")
+        );
     }
 
     // Regulatory mapping annotation is parsed and split on comma
@@ -672,7 +697,10 @@ mod tests {
         "#;
         let d = eval(policy, &json!({}));
         assert_eq!(d.action, EnforcementAction::Block);
-        assert_eq!(d.regulatory_mapping, vec!["OWASP_AGENTIC_ASI01", "EU_AI_ACT_ART_9"]);
+        assert_eq!(
+            d.regulatory_mapping,
+            vec!["OWASP_AGENTIC_ASI01", "EU_AI_ACT_ART_9"]
+        );
     }
 
     // No regulatory_mapping annotation → empty vec
@@ -808,10 +836,13 @@ mod tests {
             forbid(principal, action, resource)
             when { context has tool_names && context.tool_names.contains("execute_trade") };
         "#;
-        let d = eval_response(policy, &json!({
-            "tool_names": ["execute_trade", "get_price"],
-            "tool_count": 2,
-        }));
+        let d = eval_response(
+            policy,
+            &json!({
+                "tool_names": ["execute_trade", "get_price"],
+                "tool_count": 2,
+            }),
+        );
         assert_eq!(d.action, EnforcementAction::Block);
         assert!(d.rule_id.is_some(), "should have a rule_id");
     }
@@ -825,10 +856,13 @@ mod tests {
             forbid(principal, action, resource)
             when { context has tool_names && context.tool_names.contains("execute_trade") };
         "#;
-        let d = eval_response(policy, &json!({
-            "tool_names": ["get_weather"],
-            "tool_count": 1,
-        }));
+        let d = eval_response(
+            policy,
+            &json!({
+                "tool_names": ["get_weather"],
+                "tool_count": 1,
+            }),
+        );
         assert_eq!(d.action, EnforcementAction::Allow);
     }
 
@@ -841,10 +875,13 @@ mod tests {
             forbid(principal, action, resource)
             when { context has tool_names && context.tool_names.contains("send_email") };
         "#;
-        let d = eval_response(policy, &json!({
-            "tool_names": ["send_email"],
-            "tool_count": 1,
-        }));
+        let d = eval_response(
+            policy,
+            &json!({
+                "tool_names": ["send_email"],
+                "tool_count": 1,
+            }),
+        );
         assert_eq!(d.action, EnforcementAction::Flag);
     }
 
@@ -857,10 +894,13 @@ mod tests {
             forbid(principal, action, resource)
             when { context has tool_count && context.tool_count > 3 };
         "#;
-        let d = eval_response(policy, &json!({
-            "tool_names": ["a", "b", "c", "d"],
-            "tool_count": 4,
-        }));
+        let d = eval_response(
+            policy,
+            &json!({
+                "tool_names": ["a", "b", "c", "d"],
+                "tool_count": 4,
+            }),
+        );
         assert_eq!(d.action, EnforcementAction::Flag);
     }
 
@@ -873,10 +913,13 @@ mod tests {
             forbid(principal, action, resource)
             when { context has tool_count && context.tool_count > 3 };
         "#;
-        let d = eval_response(policy, &json!({
-            "tool_names": ["a", "b"],
-            "tool_count": 2,
-        }));
+        let d = eval_response(
+            policy,
+            &json!({
+                "tool_names": ["a", "b"],
+                "tool_count": 2,
+            }),
+        );
         assert_eq!(d.action, EnforcementAction::Allow);
     }
 
@@ -889,11 +932,14 @@ mod tests {
             forbid(principal, action, resource)
             when { context has requested_tools && context.requested_tools.contains("delete_all_data") };
         "#;
-        let d = eval(policy, &json!({
-            "model": "gpt-4o",
-            "requested_tools": ["get_weather", "delete_all_data"],
-            "requested_tool_count": 2,
-        }));
+        let d = eval(
+            policy,
+            &json!({
+                "model": "gpt-4o",
+                "requested_tools": ["get_weather", "delete_all_data"],
+                "requested_tool_count": 2,
+            }),
+        );
         assert_eq!(d.action, EnforcementAction::Block);
     }
 
@@ -906,11 +952,14 @@ mod tests {
             forbid(principal, action, resource)
             when { context has requested_tools && context.requested_tools.contains("delete_all_data") };
         "#;
-        let d = eval(policy, &json!({
-            "model": "gpt-4o",
-            "requested_tools": ["get_weather", "send_email"],
-            "requested_tool_count": 2,
-        }));
+        let d = eval(
+            policy,
+            &json!({
+                "model": "gpt-4o",
+                "requested_tools": ["get_weather", "send_email"],
+                "requested_tool_count": 2,
+            }),
+        );
         assert_eq!(d.action, EnforcementAction::Allow);
     }
 
@@ -924,10 +973,13 @@ mod tests {
             forbid(principal, action, resource)
             when { context has tool_names && context.tool_names.contains("execute_trade") };
         "#;
-        let d = eval_response(policy, &json!({
-            "model": "gpt-4o",
-            "streaming": false,
-        }));
+        let d = eval_response(
+            policy,
+            &json!({
+                "model": "gpt-4o",
+                "streaming": false,
+            }),
+        );
         assert_eq!(d.action, EnforcementAction::Allow);
     }
 
@@ -1056,7 +1108,11 @@ forbid(principal, action, resource);"#;
         "#;
         let rewritten = super::rewrite_enforcement_annotations(input, "observation");
         let engine = CedarEngine::from_policy_str(&rewritten);
-        assert!(engine.is_ok(), "rewritten policy must parse: {:?}", engine.err());
+        assert!(
+            engine.is_ok(),
+            "rewritten policy must parse: {:?}",
+            engine.err()
+        );
     }
 
     #[test]
@@ -1070,7 +1126,11 @@ forbid(principal, action, resource);"#;
         let rewritten = super::rewrite_enforcement_annotations(input, "observation");
         assert!(rewritten.contains(r#"@enforcement("flag")"#));
         let engine = CedarEngine::from_policy_str(&rewritten);
-        assert!(engine.is_ok(), "rewritten policy must parse: {:?}", engine.err());
+        assert!(
+            engine.is_ok(),
+            "rewritten policy must parse: {:?}",
+            engine.err()
+        );
     }
 
     // ── matched_rules: all fired policies captured, not just winner ──────────
@@ -1094,10 +1154,13 @@ forbid(principal, action, resource);"#;
             forbid(principal, action, resource)
             when { context.budget_remaining_cents == 0 };
         "#;
-        let d = eval(policy, &json!({
-            "consent_given": false,
-            "budget_remaining_cents": 0,
-        }));
+        let d = eval(
+            policy,
+            &json!({
+                "consent_given": false,
+                "budget_remaining_cents": 0,
+            }),
+        );
 
         // Winner is block (more restrictive)
         assert_eq!(d.action, EnforcementAction::Block);
@@ -1106,8 +1169,14 @@ forbid(principal, action, resource);"#;
         // Both rules must appear in matched_rules
         assert_eq!(d.matched_rules.len(), 2);
         let ids: Vec<&str> = d.matched_rules.iter().map(|r| r.rule_id.as_str()).collect();
-        assert!(ids.contains(&"consent-flag"), "consent-flag missing from matched_rules");
-        assert!(ids.contains(&"budget-block"), "budget-block missing from matched_rules");
+        assert!(
+            ids.contains(&"consent-flag"),
+            "consent-flag missing from matched_rules"
+        );
+        assert!(
+            ids.contains(&"budget-block"),
+            "budget-block missing from matched_rules"
+        );
     }
 
     #[test]
@@ -1128,23 +1197,36 @@ forbid(principal, action, resource);"#;
             forbid(principal, action == EnforceGrid::Action::"llm.request", resource)
             when { context.injection_detected == true };
         "#;
-        let d = eval(policy, &json!({
-            "pii_detected": true,
-            "injection_detected": true,
-        }));
+        let d = eval(
+            policy,
+            &json!({
+                "pii_detected": true,
+                "injection_detected": true,
+            }),
+        );
 
         assert_eq!(d.matched_rules.len(), 2);
 
-        let pii = d.matched_rules.iter().find(|r| r.rule_id == "pii-flag").expect("pii-flag");
+        let pii = d
+            .matched_rules
+            .iter()
+            .find(|r| r.rule_id == "pii-flag")
+            .expect("pii-flag");
         assert_eq!(pii.action, "flag");
         assert_eq!(pii.category, "data_protection");
         assert!(pii.regulatory_mapping.contains(&"GDPR_ART_5".to_string()));
         assert!(pii.regulatory_mapping.contains(&"AIUC1_E001".to_string()));
 
-        let inj = d.matched_rules.iter().find(|r| r.rule_id == "injection-flag").expect("injection-flag");
+        let inj = d
+            .matched_rules
+            .iter()
+            .find(|r| r.rule_id == "injection-flag")
+            .expect("injection-flag");
         assert_eq!(inj.action, "flag");
         assert_eq!(inj.category, "injection");
-        assert!(inj.regulatory_mapping.contains(&"OWASP_AGENTIC_ASI01".to_string()));
+        assert!(inj
+            .regulatory_mapping
+            .contains(&"OWASP_AGENTIC_ASI01".to_string()));
     }
 
     #[test]
@@ -1159,7 +1241,10 @@ forbid(principal, action, resource);"#;
         "#;
         let d = eval(policy, &json!({ "pii_detected": false }));
         assert_eq!(d.action, EnforcementAction::Allow);
-        assert!(d.matched_rules.is_empty(), "no forbid rules fired — matched_rules must be empty");
+        assert!(
+            d.matched_rules.is_empty(),
+            "no forbid rules fired — matched_rules must be empty"
+        );
     }
 
     #[test]
@@ -1174,12 +1259,15 @@ forbid(principal, action, resource);"#;
         "#;
         // evaluate_response so the permit rule fires on llm.response
         let engine = CedarEngine::from_policy_str(policy).expect("parse");
-        let d = engine.evaluate_response("test-user", "llm.response", &json!({}), &json!({}))
+        let d = engine
+            .evaluate_response("test-user", "llm.response", &json!({}), &json!({}))
             .expect("evaluate");
 
         assert_eq!(d.action, EnforcementAction::Transform);
         assert_eq!(d.matched_rules.len(), 1);
-        assert_eq!(d.matched_rules[0].action, "transform",
-            "action must be annotation value, not Cedar's permit effect");
+        assert_eq!(
+            d.matched_rules[0].action, "transform",
+            "action must be annotation value, not Cedar's permit effect"
+        );
     }
 }

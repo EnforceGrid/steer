@@ -4,7 +4,7 @@ pub mod usage;
 
 pub use cache::{BudgetCache, BudgetEntry, BudgetStatus};
 pub use costs::{CostEstimator, ModelCost};
-pub use usage::{parse_usage, parse_anthropic_usage, parse_openai_usage, TokenUsage};
+pub use usage::{parse_anthropic_usage, parse_openai_usage, parse_usage, TokenUsage};
 
 use anyhow::Result;
 
@@ -56,9 +56,20 @@ pub trait TokenProvider: Send + Sync {
 pub struct NoopTokenProvider;
 
 impl TokenProvider for NoopTokenProvider {
-    fn record_usage(&self, _record: &NewTokenUsage) -> Result<()> { Ok(()) }
-    fn update_budget_spend(&self, _scope: &str, _scope_id: &str, _cost_usd: f64) -> Result<()> { Ok(()) }
-    fn check_and_increment(&self, _scope: &str, _scope_id: &str, _metric: &str, _value: f64, _now: &str) -> Result<RateLimitCheckResult> {
+    fn record_usage(&self, _record: &NewTokenUsage) -> Result<()> {
+        Ok(())
+    }
+    fn update_budget_spend(&self, _scope: &str, _scope_id: &str, _cost_usd: f64) -> Result<()> {
+        Ok(())
+    }
+    fn check_and_increment(
+        &self,
+        _scope: &str,
+        _scope_id: &str,
+        _metric: &str,
+        _value: f64,
+        _now: &str,
+    ) -> Result<RateLimitCheckResult> {
         Ok(RateLimitCheckResult::Allowed)
     }
 }

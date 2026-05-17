@@ -1,11 +1,13 @@
+use crate::streaming::parsers::{SseFrame, StreamParser};
 use bytes::Bytes;
 use serde_json::json;
-use crate::streaming::parsers::{SseFrame, StreamParser};
 
 pub struct BedrockParser;
 
 impl StreamParser for BedrockParser {
-    fn provider(&self) -> &str { "bedrock" }
+    fn provider(&self) -> &str {
+        "bedrock"
+    }
 
     fn parse_frame(&self, raw: &[u8]) -> Vec<SseFrame> {
         // TODO(v1.1): decode application/vnd.amazon.eventstream binary frames
@@ -40,7 +42,8 @@ impl StreamParser for BedrockParser {
 
     fn encode_steer(&self, message: &str, _prev_hash: &str) -> Bytes {
         // TODO(v1.1): eventstream steer frame encoding
-        let payload = json!({"type":"content_block_delta","delta":{"type":"text_delta","text":message}});
+        let payload =
+            json!({"type":"content_block_delta","delta":{"type":"text_delta","text":message}});
         Bytes::from(serde_json::to_vec(&payload).unwrap_or_default())
     }
 }
@@ -50,7 +53,9 @@ mod tests {
     use super::*;
     use crate::streaming::parsers::StreamParser;
 
-    fn parser() -> BedrockParser { BedrockParser }
+    fn parser() -> BedrockParser {
+        BedrockParser
+    }
 
     #[test]
     fn parse_frame_passthrough() {

@@ -18,11 +18,13 @@
 //! Pattern taxonomy based on OWASP LLM06 (Excessive Agency) and empirical
 //! naming conventions from LangChain, AutoGen, LlamaIndex, and CrewAI.
 
-use std::collections::HashSet;
+use crate::detectors::{
+    truncate_match, ContentDetector, DetectionResult, DetectorFinding, DetectorSignal,
+};
 use once_cell::sync::Lazy;
 use regex::RegexSet;
-use crate::detectors::{ContentDetector, DetectionResult, DetectorFinding, DetectorSignal, truncate_match};
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Risk categories for dangerous tool patterns.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -70,26 +72,55 @@ impl ToolRiskCategory {
 }
 
 // (pattern, category) — order matches DENYLIST_PATTERNS.
-static DENYLIST_META: Lazy<Vec<(&str, ToolRiskCategory)>> = Lazy::new(|| vec![
-    // Code / shell execution
-    (r"(?i)\b(?:exec|execute|shell|bash|sh|zsh|cmd|powershell|eval|run_code|subprocess|spawn_shell|terminal|execute_code|run_script|interpreter)\b", ToolRiskCategory::CodeExecution),
-    // File system write
-    (r"(?i)\b(?:write_file|delete_file|create_file|overwrite_file|rm|remove_file|rename_file|move_file|copy_file|chmod|chown|truncate|unlink)\b", ToolRiskCategory::FileSystemWrite),
-    // Network / HTTP calls
-    (r"(?i)\b(?:http_request|fetch_url|curl|wget|http_get|http_post|send_request|make_request|web_request|webhook|call_api|api_call|send_http)\b", ToolRiskCategory::NetworkCall),
-    // Database write
-    (r"(?i)\b(?:db_write|db_execute|sql_exec|execute_sql|run_query|insert_record|delete_record|update_record|drop_table|create_table|db_delete|db_insert|db_update|db_drop)\b", ToolRiskCategory::DatabaseWrite),
-    // Email / messaging
-    (r"(?i)\b(?:send_email|send_message|send_sms|send_slack|send_discord|post_to_slack|post_to_discord|notify|send_notification|email|smtp_send|message_user|dm_user)\b", ToolRiskCategory::EmailMessaging),
-    // Payment / financial
-    (r"(?i)\b(?:charge|transfer|payment|withdraw|refund|debit|credit_card|process_payment|make_payment|bank_transfer|financial_transaction|stripe_charge)\b", ToolRiskCategory::PaymentFinancial),
-    // Credential access
-    (r"(?i)\b(?:get_secret|read_credentials?|vault_read|get_api_key|fetch_token|read_token|get_password|read_secret|secret_manager|credential_lookup)\b", ToolRiskCategory::CredentialAccess),
-    // Process control
-    (r"(?i)\b(?:kill_process|spawn_process|restart_service|shutdown|reboot|start_service|stop_service|signal_process|kill_pid|terminate_process)\b", ToolRiskCategory::ProcessControl),
-    // Admin / privilege escalation
-    (r"(?i)\b(?:sudo|grant_permission|add_user|create_role|delete_user|assign_role|elevate_privilege|privilege_escalate|admin_access|root_access|iam_create|iam_delete|add_admin)\b", ToolRiskCategory::PrivilegeEscalation),
-]);
+static DENYLIST_META: Lazy<Vec<(&str, ToolRiskCategory)>> = Lazy::new(|| {
+    vec![
+        // Code / shell execution
+        (
+            r"(?i)\b(?:exec|execute|shell|bash|sh|zsh|cmd|powershell|eval|run_code|subprocess|spawn_shell|terminal|execute_code|run_script|interpreter)\b",
+            ToolRiskCategory::CodeExecution,
+        ),
+        // File system write
+        (
+            r"(?i)\b(?:write_file|delete_file|create_file|overwrite_file|rm|remove_file|rename_file|move_file|copy_file|chmod|chown|truncate|unlink)\b",
+            ToolRiskCategory::FileSystemWrite,
+        ),
+        // Network / HTTP calls
+        (
+            r"(?i)\b(?:http_request|fetch_url|curl|wget|http_get|http_post|send_request|make_request|web_request|webhook|call_api|api_call|send_http)\b",
+            ToolRiskCategory::NetworkCall,
+        ),
+        // Database write
+        (
+            r"(?i)\b(?:db_write|db_execute|sql_exec|execute_sql|run_query|insert_record|delete_record|update_record|drop_table|create_table|db_delete|db_insert|db_update|db_drop)\b",
+            ToolRiskCategory::DatabaseWrite,
+        ),
+        // Email / messaging
+        (
+            r"(?i)\b(?:send_email|send_message|send_sms|send_slack|send_discord|post_to_slack|post_to_discord|notify|send_notification|email|smtp_send|message_user|dm_user)\b",
+            ToolRiskCategory::EmailMessaging,
+        ),
+        // Payment / financial
+        (
+            r"(?i)\b(?:charge|transfer|payment|withdraw|refund|debit|credit_card|process_payment|make_payment|bank_transfer|financial_transaction|stripe_charge)\b",
+            ToolRiskCategory::PaymentFinancial,
+        ),
+        // Credential access
+        (
+            r"(?i)\b(?:get_secret|read_credentials?|vault_read|get_api_key|fetch_token|read_token|get_password|read_secret|secret_manager|credential_lookup)\b",
+            ToolRiskCategory::CredentialAccess,
+        ),
+        // Process control
+        (
+            r"(?i)\b(?:kill_process|spawn_process|restart_service|shutdown|reboot|start_service|stop_service|signal_process|kill_pid|terminate_process)\b",
+            ToolRiskCategory::ProcessControl,
+        ),
+        // Admin / privilege escalation
+        (
+            r"(?i)\b(?:sudo|grant_permission|add_user|create_role|delete_user|assign_role|elevate_privilege|privilege_escalate|admin_access|root_access|iam_create|iam_delete|add_admin)\b",
+            ToolRiskCategory::PrivilegeEscalation,
+        ),
+    ]
+});
 
 static DENYLIST_SET: Lazy<RegexSet> = Lazy::new(|| {
     let patterns: Vec<&str> = DENYLIST_META.iter().map(|(p, _)| *p).collect();
@@ -168,11 +199,15 @@ impl ToolGovernanceDetector {
                 // Tool names are typically snake_case — also check individual
                 // underscore-separated words so "execute_shell_command" matches
                 // the "execute" pattern even though \b doesn't split on _.
-                let full_match = DENYLIST_SET.matches(tool_name.as_str()).into_iter().next().is_some();
+                let full_match = DENYLIST_SET
+                    .matches(tool_name.as_str())
+                    .into_iter()
+                    .next()
+                    .is_some();
                 let word_match = if !full_match && tool_name.contains('_') {
-                    tool_name.split('_').any(|word| {
-                        DENYLIST_SET.matches(word).into_iter().next().is_some()
-                    })
+                    tool_name
+                        .split('_')
+                        .any(|word| DENYLIST_SET.matches(word).into_iter().next().is_some())
                 } else {
                     false
                 };
@@ -187,7 +222,10 @@ impl ToolGovernanceDetector {
                 // Find matching categories for this tool (also check word components)
                 if !allowlist_mode {
                     let matched_indices: Vec<usize> = {
-                        let full: Vec<usize> = DENYLIST_SET.matches(tool_name.as_str()).into_iter().collect();
+                        let full: Vec<usize> = DENYLIST_SET
+                            .matches(tool_name.as_str())
+                            .into_iter()
+                            .collect();
                         if full.is_empty() && tool_name.contains('_') {
                             // Collect indices from any matching word component
                             let mut word_indices = Vec::new();
@@ -234,17 +272,32 @@ impl ToolGovernanceDetector {
 }
 
 impl ContentDetector for ToolGovernanceDetector {
-    fn name(&self) -> &str { "Tool Governance Detector" }
-    fn version(&self) -> &str { "v1.0" }
-    fn detector_type(&self) -> &str { "tool_governance" }
+    fn name(&self) -> &str {
+        "Tool Governance Detector"
+    }
+    fn version(&self) -> &str {
+        "v1.0"
+    }
+    fn detector_type(&self) -> &str {
+        "tool_governance"
+    }
 
     fn signal(&self, text: &str) -> DetectorSignal {
         let tool_names = extract_tool_names_from_text(text);
         let gov_result = self.scan_tools(&tool_names);
         let mut metadata = HashMap::new();
-        metadata.insert("tool_names".to_string(), serde_json::json!(gov_result.unauthorized_names));
-        metadata.insert("risk_category".to_string(), serde_json::json!(gov_result.highest_risk_category));
-        metadata.insert("categories".to_string(), serde_json::json!(gov_result.categories));
+        metadata.insert(
+            "tool_names".to_string(),
+            serde_json::json!(gov_result.unauthorized_names),
+        );
+        metadata.insert(
+            "risk_category".to_string(),
+            serde_json::json!(gov_result.highest_risk_category),
+        );
+        metadata.insert(
+            "categories".to_string(),
+            serde_json::json!(gov_result.categories),
+        );
         let scan_result = self.scan(text);
         DetectorSignal {
             detector: self.detector_type().to_string(),
@@ -269,8 +322,10 @@ impl ContentDetector for ToolGovernanceDetector {
             return DetectionResult::clean("tool_governance");
         }
 
-        let findings: Vec<DetectorFinding> = result.unauthorized_names.iter().map(|name| {
-            DetectorFinding {
+        let findings: Vec<DetectorFinding> = result
+            .unauthorized_names
+            .iter()
+            .map(|name| DetectorFinding {
                 pattern_name: "unauthorized_tool".to_string(),
                 category: if result.allowlist_mode {
                     "not_in_allowlist".to_string()
@@ -280,8 +335,8 @@ impl ContentDetector for ToolGovernanceDetector {
                 confidence: 1.0,
                 offset: None,
                 matched_text: truncate_match(name, 200),
-            }
-        }).collect();
+            })
+            .collect();
 
         DetectionResult {
             detected: true,
@@ -300,10 +355,12 @@ fn extract_tool_names_from_text(text: &str) -> Vec<String> {
         regex::Regex::new(r#""name"\s*:\s*"([^"]{1,100})""#).unwrap()
     });
     // Only scan if the text looks like it contains tool call JSON
-    if !text.contains("tool_calls") && !text.contains("function_call") && !text.contains("tool_use") {
+    if !text.contains("tool_calls") && !text.contains("function_call") && !text.contains("tool_use")
+    {
         return Vec::new();
     }
-    NAME_RE.captures_iter(text)
+    NAME_RE
+        .captures_iter(text)
         .map(|c| c[1].to_string())
         .collect()
 }
@@ -402,8 +459,13 @@ mod tests {
         // "execute_shell_command" — \b doesn't split on _, so word-component scan is needed
         let det = denylist_detector();
         let r = det.scan_tools(&["execute_shell_command".to_string()]);
-        assert!(r.detected, "execute_shell_command should match code_execution denylist");
-        assert!(r.unauthorized_names.contains(&"execute_shell_command".to_string()));
+        assert!(
+            r.detected,
+            "execute_shell_command should match code_execution denylist"
+        );
+        assert!(r
+            .unauthorized_names
+            .contains(&"execute_shell_command".to_string()));
         assert!(r.categories.contains(&"code_execution".to_string()));
     }
 
@@ -493,7 +555,8 @@ mod tests {
     #[test]
     fn scan_text_detects_tool_calls_json() {
         let det = denylist_detector();
-        let text = r#"{"tool_calls": [{"function": {"name": "bash", "arguments": "{\"cmd\":\"ls\"}"}}]}"#;
+        let text =
+            r#"{"tool_calls": [{"function": {"name": "bash", "arguments": "{\"cmd\":\"ls\"}"}}]}"#;
         let result = det.scan(text);
         assert!(result.detected);
     }

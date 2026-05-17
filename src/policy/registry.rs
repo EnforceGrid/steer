@@ -31,15 +31,23 @@ use crate::policy::cedar::CedarEngine;
 /// Trait abstracting the SQLite-backed TenantPolicyConfigStore so steer-core
 /// doesn't depend on rusqlite. Implemented by steer-ee's TenantPolicyConfigStore.
 pub trait PolicyRegistryBackend: Send + Sync {
-    fn get_tenant_config(&self, tenant_id: &str) -> Result<crate::tenants::policy_config::TenantPolicyConfig>;
-    fn get_managed_version(&self, version: &str) -> Result<Option<crate::tenants::policy_config::ManagedPolicyVersion>>;
+    fn get_tenant_config(
+        &self,
+        tenant_id: &str,
+    ) -> Result<crate::tenants::policy_config::TenantPolicyConfig>;
+    fn get_managed_version(
+        &self,
+        version: &str,
+    ) -> Result<Option<crate::tenants::policy_config::ManagedPolicyVersion>>;
     fn tenants_with_auto_upgrade(&self) -> Result<Vec<String>>;
     fn upgrade_tenant_version(&self, tenant_id: &str, version: &str) -> Result<()>;
     fn managed_policy_count_for_version(&self, version: &str) -> usize;
 }
 
 /// Domain types re-exported so downstream code doesn't need to import from policy_config.
-pub use crate::tenants::policy_config::{TenantPolicyConfig, ManagedPolicyVersion, CURRENT_MANAGED_VERSION};
+pub use crate::tenants::policy_config::{
+    ManagedPolicyVersion, TenantPolicyConfig, CURRENT_MANAGED_VERSION,
+};
 
 pub struct TenantPolicyRegistry {
     /// Live Cedar engines, keyed by tenant_id. Populated lazily.
@@ -73,7 +81,8 @@ impl TenantPolicyRegistry {
             });
 
         let swap = Arc::new(ArcSwap::new(Arc::new(engine)));
-        self.engines.insert(tenant_id.to_string(), Arc::clone(&swap));
+        self.engines
+            .insert(tenant_id.to_string(), Arc::clone(&swap));
         swap.load_full()
     }
 
@@ -83,8 +92,10 @@ impl TenantPolicyRegistry {
         if let Some(swap) = self.engines.get(tenant_id) {
             swap.store(Arc::new(engine));
         } else {
-            self.engines.insert(tenant_id.to_string(),
-                Arc::new(ArcSwap::new(Arc::new(engine))));
+            self.engines.insert(
+                tenant_id.to_string(),
+                Arc::new(ArcSwap::new(Arc::new(engine))),
+            );
         }
         info!(tenant_id, "tenant policy engine reloaded");
         Ok(())
@@ -103,12 +114,16 @@ impl TenantPolicyRegistry {
         let auto_tenants = self.config_store.tenants_with_auto_upgrade()?;
         let mut count = 0;
         for tenant_id in &auto_tenants {
-            self.config_store.upgrade_tenant_version(tenant_id, new_version)?;
+            self.config_store
+                .upgrade_tenant_version(tenant_id, new_version)?;
             self.evict(tenant_id);
             count += 1;
         }
         if count > 0 {
-            info!(version = new_version, count, "auto-upgraded tenants to new managed version");
+            info!(
+                version = new_version,
+                count, "auto-upgraded tenants to new managed version"
+            );
         }
         Ok(count)
     }
@@ -117,14 +132,17 @@ impl TenantPolicyRegistry {
     /// Used by the capabilities endpoint so the frontend can display the
     /// managed policy count without a per-tenant directory lookup.
     pub fn managed_policy_count(&self) -> usize {
-        self.config_store.managed_policy_count_for_version(CURRENT_MANAGED_VERSION)
+        self.config_store
+            .managed_policy_count_for_version(CURRENT_MANAGED_VERSION)
     }
 
     // ── Internal ──────────────────────────────────────────────────────────
 
     fn load_engine_for(&self, tenant_id: &str) -> Result<CedarEngine> {
         let config = self.config_store.get_tenant_config(tenant_id)?;
-        let managed = self.config_store.get_managed_version(&config.managed_version)?;
+        let managed = self
+            .config_store
+            .get_managed_version(&config.managed_version)?;
 
         let mut combined = match managed {
             Some(v) => v.content,

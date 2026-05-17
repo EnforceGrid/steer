@@ -1,11 +1,13 @@
+use crate::streaming::parsers::{SseFrame, StreamParser};
 use bytes::Bytes;
 use serde_json::json;
-use crate::streaming::parsers::{SseFrame, StreamParser};
 
 pub struct AnthropicParser;
 
 impl StreamParser for AnthropicParser {
-    fn provider(&self) -> &str { "anthropic" }
+    fn provider(&self) -> &str {
+        "anthropic"
+    }
 
     fn parse_frame(&self, raw: &[u8]) -> Vec<SseFrame> {
         let text = match std::str::from_utf8(raw) {
@@ -76,7 +78,9 @@ mod tests {
     use super::*;
     use crate::streaming::parsers::StreamParser;
 
-    fn parser() -> AnthropicParser { AnthropicParser }
+    fn parser() -> AnthropicParser {
+        AnthropicParser
+    }
 
     #[test]
     fn parse_frame_extracts_content_block_delta() {
@@ -152,7 +156,11 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].event.as_deref(), Some("content_block_delta"));
         assert!(!frames[0].is_done);
-        assert!(frames[0].data.contains("hello"), "Content should be 'hello', got: {}", frames[0].data);
+        assert!(
+            frames[0].data.contains("hello"),
+            "Content should be 'hello', got: {}",
+            frames[0].data
+        );
     }
 
     #[test]
@@ -179,7 +187,10 @@ mod tests {
         // After chunk 2: message_stop should be extractable
         sse_buf.extend_from_slice(chunk2);
         let events2 = extract_complete_sse_events(&mut sse_buf);
-        assert!(!events2.is_empty(), "message_stop event should be extractable");
+        assert!(
+            !events2.is_empty(),
+            "message_stop event should be extractable"
+        );
 
         let mut found_done = false;
         for ev in &events2 {
@@ -190,7 +201,10 @@ mod tests {
                 }
             }
         }
-        assert!(found_done, "Should find message_stop frame after reassembly");
+        assert!(
+            found_done,
+            "Should find message_stop frame after reassembly"
+        );
     }
 
     #[test]
@@ -217,8 +231,8 @@ mod tests {
         assert!(!frames[0].is_done);
 
         // Verify tool id and name are extractable from parsed data
-        let parsed: serde_json::Value = serde_json::from_str(&frames[0].data)
-            .expect("Should parse as valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&frames[0].data).expect("Should parse as valid JSON");
         let content_block = &parsed["content_block"];
         assert_eq!(content_block["id"].as_str().unwrap(), "toolu_ABC");
         assert_eq!(content_block["name"].as_str().unwrap(), "my_tool");
@@ -230,9 +244,19 @@ mod tests {
         // Two complete Anthropic events in a single chunk — regression test
         let raw = b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"a\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"b\"}}\n\n";
         let frames = parser().parse_frame(raw);
-        assert_eq!(frames.len(), 2, "Two complete events should produce two frames");
-        assert!(frames[0].data.contains("\"a\""), "First frame should contain 'a'");
-        assert!(frames[1].data.contains("\"b\""), "Second frame should contain 'b'");
+        assert_eq!(
+            frames.len(),
+            2,
+            "Two complete events should produce two frames"
+        );
+        assert!(
+            frames[0].data.contains("\"a\""),
+            "First frame should contain 'a'"
+        );
+        assert!(
+            frames[1].data.contains("\"b\""),
+            "Second frame should contain 'b'"
+        );
         assert!(!frames[0].is_done);
         assert!(!frames[1].is_done);
     }

@@ -16,8 +16,8 @@
 //!
 //! See `scripts/toxicity-sidecar/` for a reference FastAPI implementation.
 
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tracing::warn;
 
 /// Scores returned by the ML sidecar. All values in [0.0, 1.0].
@@ -62,23 +62,18 @@ pub async fn score(
 ) -> Option<ToxicityScore> {
     let result = tokio::time::timeout(
         Duration::from_millis(timeout_ms),
-        client
-            .post(url)
-            .json(&ClassifyRequest { text })
-            .send(),
+        client.post(url).json(&ClassifyRequest { text }).send(),
     )
     .await;
 
     match result {
-        Ok(Ok(resp)) if resp.status().is_success() => {
-            match resp.json::<ToxicityScore>().await {
-                Ok(score) => Some(score),
-                Err(e) => {
-                    warn!(error = %e, "toxicity sidecar: failed to parse response");
-                    None
-                }
+        Ok(Ok(resp)) if resp.status().is_success() => match resp.json::<ToxicityScore>().await {
+            Ok(score) => Some(score),
+            Err(e) => {
+                warn!(error = %e, "toxicity sidecar: failed to parse response");
+                None
             }
-        }
+        },
         Ok(Ok(resp)) => {
             warn!(status = %resp.status(), "toxicity sidecar: non-2xx response");
             None
@@ -100,19 +95,34 @@ mod tests {
 
     #[test]
     fn threat_score_pct_rounds_correctly() {
-        let s = ToxicityScore { threat: 0.956, toxicity: 0.8, self_harm: 0.0, harassment: 0.1 };
+        let s = ToxicityScore {
+            threat: 0.956,
+            toxicity: 0.8,
+            self_harm: 0.0,
+            harassment: 0.1,
+        };
         assert_eq!(s.threat_score_pct(), 96);
     }
 
     #[test]
     fn threat_score_pct_zero() {
-        let s = ToxicityScore { threat: 0.0, toxicity: 0.0, self_harm: 0.0, harassment: 0.0 };
+        let s = ToxicityScore {
+            threat: 0.0,
+            toxicity: 0.0,
+            self_harm: 0.0,
+            harassment: 0.0,
+        };
         assert_eq!(s.threat_score_pct(), 0);
     }
 
     #[test]
     fn threat_score_pct_full() {
-        let s = ToxicityScore { threat: 1.0, toxicity: 1.0, self_harm: 0.0, harassment: 0.0 };
+        let s = ToxicityScore {
+            threat: 1.0,
+            toxicity: 1.0,
+            self_harm: 0.0,
+            harassment: 0.0,
+        };
         assert_eq!(s.threat_score_pct(), 100);
     }
 }

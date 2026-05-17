@@ -19,8 +19,8 @@ use notify::Watcher as NotifyWatcher;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::config::PolicyConfig;
 use super::cedar::CedarEngine;
+use crate::config::PolicyConfig;
 
 /// Watches a policy directory and hot-reloads on `.cedar` file changes.
 pub struct PolicyWatcher {
@@ -31,10 +31,7 @@ pub struct PolicyWatcher {
 
 impl PolicyWatcher {
     /// Create a new watcher.  Does not start watching until [`run`] is called.
-    pub fn new(
-        config: PolicyConfig,
-        swap: Arc<ArcSwap<CedarEngine>>,
-    ) -> anyhow::Result<Self> {
+    pub fn new(config: PolicyConfig, swap: Arc<ArcSwap<CedarEngine>>) -> anyhow::Result<Self> {
         // Watch the dir that contains the policies
         let watch_path = if let Some(ref file) = config.policy_file {
             PathBuf::from(file)
@@ -45,7 +42,11 @@ impl PolicyWatcher {
             PathBuf::from(&config.policy_dir)
         };
 
-        Ok(Self { config, swap, watch_path })
+        Ok(Self {
+            config,
+            swap,
+            watch_path,
+        })
     }
 
     /// Start watching.  This is an async loop that runs until the channel is
@@ -56,20 +57,22 @@ impl PolicyWatcher {
 
         // notify::recommended_watcher runs on a background OS thread; we bridge
         // it to the tokio world with a mpsc channel.
-        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            match res {
-                Ok(event) => {
-                    // Only care about .cedar files
-                    let is_cedar = event.paths.iter().any(|p| {
-                        p.extension().is_some_and(|ext| ext == "cedar")
-                    });
-                    if is_cedar {
-                        let _ = tx.try_send(());
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                match res {
+                    Ok(event) => {
+                        // Only care about .cedar files
+                        let is_cedar = event
+                            .paths
+                            .iter()
+                            .any(|p| p.extension().is_some_and(|ext| ext == "cedar"));
+                        if is_cedar {
+                            let _ = tx.try_send(());
+                        }
                     }
+                    Err(e) => warn!(error = %e, "policy watcher notify error"),
                 }
-                Err(e) => warn!(error = %e, "policy watcher notify error"),
-            }
-        })?;
+            })?;
 
         if self.watch_path.exists() {
             watcher.watch(&self.watch_path, RecursiveMode::NonRecursive)?;

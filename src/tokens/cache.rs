@@ -1,8 +1,8 @@
+use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
@@ -307,7 +307,10 @@ mod tests {
     #[test]
     fn cache_key_format() {
         assert_eq!(BudgetCache::cache_key("agent", "agent-x"), "agent:agent-x");
-        assert_eq!(BudgetCache::cache_key("provider", "openai"), "provider:openai");
+        assert_eq!(
+            BudgetCache::cache_key("provider", "openai"),
+            "provider:openai"
+        );
     }
 
     // ── past_reset helper usage ───────────────────────────────────────────────

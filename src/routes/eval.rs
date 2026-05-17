@@ -66,9 +66,15 @@ pub struct EvalRequest {
     pub context: Value,
 }
 
-fn default_principal() -> String { "api-caller".to_string() }
-fn default_action() -> String { "llm.request".to_string() }
-fn default_resource() -> String { "request".to_string() }
+fn default_principal() -> String {
+    "api-caller".to_string()
+}
+fn default_action() -> String {
+    "llm.request".to_string()
+}
+fn default_resource() -> String {
+    "request".to_string()
+}
 
 #[derive(Debug, Serialize)]
 pub struct EvalResponse {
@@ -91,8 +97,12 @@ pub struct EvalResponse {
 pub async fn eval_policy(
     Json(req): Json<EvalRequest>,
 ) -> Result<Json<EvalResponse>, (StatusCode, String)> {
-    let engine = CedarEngine::from_policy_str(&req.cedar_text)
-        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, format!("cedar parse error: {e}")))?;
+    let engine = CedarEngine::from_policy_str(&req.cedar_text).map_err(|e| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("cedar parse error: {e}"),
+        )
+    })?;
 
     let resource_attrs = Value::Null;
     let decision = if req.resource == "response" {
@@ -152,8 +162,8 @@ pub struct DetectorsResponse {
 pub async fn list_detectors() -> Json<DetectorsResponse> {
     Json(DetectorsResponse {
         builtin: builtin_detectors(),
-        customer_wired: vec![],          // populated at runtime from audit entries in v1
-        requested_but_missing: vec![],   // populated by failed pipeline runs in v1
+        customer_wired: vec![], // populated at runtime from audit entries in v1
+        requested_but_missing: vec![], // populated by failed pipeline runs in v1
     })
 }
 
@@ -322,7 +332,11 @@ mod tests {
         // Every built-in detector should have a non-empty name and description
         for d in &detectors {
             assert!(!d.name.is_empty(), "detector missing name");
-            assert!(!d.description.is_empty(), "detector {} missing description", d.name);
+            assert!(
+                !d.description.is_empty(),
+                "detector {} missing description",
+                d.name
+            );
         }
     }
 
@@ -332,10 +346,15 @@ mod tests {
         let detectors = builtin_detectors();
         let names: Vec<&str> = detectors.iter().map(|d| d.name.as_str()).collect();
         for expected in &[
-            "injection_detected", "jailbreak_detected", "pii_detected",
-            "threat_detected", "exfiltration_detected",
-            "tool_names", "budget_remaining_cents",
-            "model", "agent_id",
+            "injection_detected",
+            "jailbreak_detected",
+            "pii_detected",
+            "threat_detected",
+            "exfiltration_detected",
+            "tool_names",
+            "budget_remaining_cents",
+            "model",
+            "agent_id",
         ] {
             assert!(names.contains(expected), "missing detector: {expected}");
         }

@@ -105,7 +105,11 @@ impl PolicyInput {
             "context": "_truncated_",
         });
         let s = serde_json::to_string(&truncated).unwrap_or_default();
-        if s.len() <= max_bytes { s } else { s[..max_bytes].to_string() }
+        if s.len() <= max_bytes {
+            s
+        } else {
+            s[..max_bytes].to_string()
+        }
     }
 }
 
@@ -245,32 +249,50 @@ mod tests {
 
     #[test]
     fn action_from_chat_completions_path() {
-        assert_eq!(PolicyAction::from_path("/v1/chat/completions"), PolicyAction::LlmRequest);
+        assert_eq!(
+            PolicyAction::from_path("/v1/chat/completions"),
+            PolicyAction::LlmRequest
+        );
     }
 
     #[test]
     fn action_from_messages_path() {
-        assert_eq!(PolicyAction::from_path("/v1/messages"), PolicyAction::LlmRequest);
+        assert_eq!(
+            PolicyAction::from_path("/v1/messages"),
+            PolicyAction::LlmRequest
+        );
     }
 
     #[test]
     fn action_from_embeddings_path() {
-        assert_eq!(PolicyAction::from_path("/v1/embeddings"), PolicyAction::EmbeddingCreate);
+        assert_eq!(
+            PolicyAction::from_path("/v1/embeddings"),
+            PolicyAction::EmbeddingCreate
+        );
     }
 
     #[test]
     fn action_from_images_path() {
-        assert_eq!(PolicyAction::from_path("/v1/images/generations"), PolicyAction::ImageGenerate);
+        assert_eq!(
+            PolicyAction::from_path("/v1/images/generations"),
+            PolicyAction::ImageGenerate
+        );
     }
 
     #[test]
     fn action_from_models_path() {
-        assert_eq!(PolicyAction::from_path("/v1/models"), PolicyAction::ModelsList);
+        assert_eq!(
+            PolicyAction::from_path("/v1/models"),
+            PolicyAction::ModelsList
+        );
     }
 
     #[test]
     fn action_unknown_path_defaults_to_llm_request() {
-        assert_eq!(PolicyAction::from_path("/v1/unknown"), PolicyAction::LlmRequest);
+        assert_eq!(
+            PolicyAction::from_path("/v1/unknown"),
+            PolicyAction::LlmRequest
+        );
     }
 
     #[test]
@@ -280,14 +302,20 @@ mod tests {
 
     #[test]
     fn action_response_without_tool_calls() {
-        assert_eq!(PolicyAction::from_response(false), PolicyAction::LlmResponse);
+        assert_eq!(
+            PolicyAction::from_response(false),
+            PolicyAction::LlmResponse
+        );
     }
 
     #[test]
     fn cedar_action_string_format() {
         assert_eq!(PolicyAction::LlmRequest.as_cedar_action(), "llm.request");
         assert_eq!(PolicyAction::ToolCall.as_cedar_action(), "tool.call");
-        assert_eq!(PolicyAction::EmbeddingCreate.as_cedar_action(), "embedding.create");
+        assert_eq!(
+            PolicyAction::EmbeddingCreate.as_cedar_action(),
+            "embedding.create"
+        );
     }
 
     #[test]
@@ -298,7 +326,12 @@ mod tests {
 
     #[test]
     fn policy_input_serializes_to_json() {
-        let input = PolicyInput::new("agent-1", PolicyAction::LlmRequest, "request", json!({"model": "gpt-4o"}));
+        let input = PolicyInput::new(
+            "agent-1",
+            PolicyAction::LlmRequest,
+            "request",
+            json!({"model": "gpt-4o"}),
+        );
         let json = serde_json::to_string(&input).unwrap();
         assert!(json.contains("llm.request"));
         assert!(json.contains("agent-1"));
@@ -315,7 +348,12 @@ mod tests {
 
     #[test]
     fn header_value_keeps_full_when_small() {
-        let input = PolicyInput::new("a", PolicyAction::LlmRequest, "r", json!({"model": "gpt-4o"}));
+        let input = PolicyInput::new(
+            "a",
+            PolicyAction::LlmRequest,
+            "r",
+            json!({"model": "gpt-4o"}),
+        );
         let header = input.to_header_value(4096);
         assert!(header.contains("gpt-4o"));
         assert!(!header.contains("_truncated_"));
@@ -327,18 +365,28 @@ mod tests {
         let obj = ctx.as_object().unwrap();
         // All fields present
         for key in &[
-            "model", "streaming", "pii_detected",
+            "model",
+            "streaming",
+            "pii_detected",
             "risk_level",
-            "tool_name", "tool_names", "tool_count",
+            "tool_name",
+            "tool_names",
+            "tool_count",
             "requested_tools",
-            "budget_remaining_cents", "budget_utilization_pct",
+            "budget_remaining_cents",
+            "budget_utilization_pct",
             "injection_detected",
             "jailbreak_detected",
-            "threat_detected", "identity_claim_detected", "confidential_detected",
+            "threat_detected",
+            "identity_claim_detected",
+            "confidential_detected",
             "bias_detected",
-            "exfiltration_detected", "exfiltration_type",
+            "exfiltration_detected",
+            "exfiltration_type",
             "unauthorized_tool_detected",
-            "tool_categories", "tool_highest_risk_category", "tool_allowlist_mode",
+            "tool_categories",
+            "tool_highest_risk_category",
+            "tool_allowlist_mode",
             "fallback_available",
             "model_approved",
             "consent_given",
@@ -356,7 +404,10 @@ mod tests {
         }
         // Security-critical default: mcp_server_approved must default false
         // so unevaluated requests are denied, not permitted.
-        assert_eq!(obj["mcp_server_approved"], false, "mcp_server_approved must default to false");
+        assert_eq!(
+            obj["mcp_server_approved"], false,
+            "mcp_server_approved must default to false"
+        );
     }
 
     #[test]

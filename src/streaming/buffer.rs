@@ -38,7 +38,10 @@ impl WordBoundaryBuffer {
         }
 
         // Check for word boundary (whitespace)
-        if bytes.iter().any(|b| *b == b' ' || *b == b'\n' || *b == b'\r' || *b == b'\t') {
+        if bytes
+            .iter()
+            .any(|b| *b == b' ' || *b == b'\n' || *b == b'\r' || *b == b'\t')
+        {
             self.flush_counts.on_boundary += 1;
             return Some((self.take(), FlushReason::Boundary));
         }
@@ -110,7 +113,7 @@ mod tests {
     #[test]
     fn flush_end_returns_remaining_and_increments_count() {
         let mut buf = WordBoundaryBuffer::new(1024);
-        buf.push(b"partial");  // no boundary, stays in buffer
+        buf.push(b"partial"); // no boundary, stays in buffer
         let result = buf.flush_end();
         assert!(result.is_some());
         assert_eq!(result.unwrap(), b"partial");
@@ -129,10 +132,10 @@ mod tests {
     #[test]
     fn flush_counts_accumulate_across_multiple_flushes() {
         let mut buf = WordBoundaryBuffer::new(1024);
-        buf.push(b"word1 ");   // boundary flush #1
-        buf.push(b"word2\n");  // boundary flush #2
-        buf.push(b"word3");    // no flush — stays buffered
-        buf.flush_end();       // stream-end flush #1
+        buf.push(b"word1 "); // boundary flush #1
+        buf.push(b"word2\n"); // boundary flush #2
+        buf.push(b"word3"); // no flush — stays buffered
+        buf.flush_end(); // stream-end flush #1
 
         assert_eq!(buf.flush_counts.on_boundary, 2);
         assert_eq!(buf.flush_counts.on_stream_end, 1);

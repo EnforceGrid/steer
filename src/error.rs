@@ -38,12 +38,26 @@ pub enum SteerError {
 impl IntoResponse for SteerError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            SteerError::UpstreamUnreachable(_) => (StatusCode::BAD_GATEWAY, "upstream_unreachable", self.to_string()),
-            SteerError::UpstreamTimeout { .. } => (StatusCode::GATEWAY_TIMEOUT, "upstream_timeout", self.to_string()),
-            SteerError::PolicyBlock { .. } => (StatusCode::FORBIDDEN, "policy_block", self.to_string()),
+            SteerError::UpstreamUnreachable(_) => (
+                StatusCode::BAD_GATEWAY,
+                "upstream_unreachable",
+                self.to_string(),
+            ),
+            SteerError::UpstreamTimeout { .. } => (
+                StatusCode::GATEWAY_TIMEOUT,
+                "upstream_timeout",
+                self.to_string(),
+            ),
+            SteerError::PolicyBlock { .. } => {
+                (StatusCode::FORBIDDEN, "policy_block", self.to_string())
+            }
             SteerError::PiiBlock { .. } => (StatusCode::FORBIDDEN, "pii_block", self.to_string()),
             SteerError::NoApiKey => (StatusCode::BAD_REQUEST, "no_api_key", self.to_string()),
-            _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", self.to_string()),
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                self.to_string(),
+            ),
         };
 
         // OpenAI-compatible error shape so client SDKs parse it correctly
@@ -82,13 +96,17 @@ mod tests {
 
     #[test]
     fn policy_block_returns_403() {
-        let err = SteerError::PolicyBlock { rule: "no-pii".to_string() };
+        let err = SteerError::PolicyBlock {
+            rule: "no-pii".to_string(),
+        };
         assert_eq!(status_of(err), axum::http::StatusCode::FORBIDDEN);
     }
 
     #[test]
     fn pii_block_returns_403() {
-        let err = SteerError::PiiBlock { pattern: "ssn".to_string() };
+        let err = SteerError::PiiBlock {
+            pattern: "ssn".to_string(),
+        };
         assert_eq!(status_of(err), axum::http::StatusCode::FORBIDDEN);
     }
 
@@ -101,19 +119,28 @@ mod tests {
     #[test]
     fn config_error_returns_500() {
         let err = SteerError::Config("bad config".to_string());
-        assert_eq!(status_of(err), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            status_of(err),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
     fn audit_write_error_returns_500() {
         let err = SteerError::AuditWrite("disk full".to_string());
-        assert_eq!(status_of(err), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            status_of(err),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
     fn cedar_policy_error_returns_500() {
         let err = SteerError::CedarPolicy("policy parse error".to_string());
-        assert_eq!(status_of(err), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            status_of(err),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
@@ -127,11 +154,17 @@ mod tests {
             "upstream timeout after 1000ms"
         );
         assert_eq!(
-            SteerError::PolicyBlock { rule: "R1".to_string() }.to_string(),
+            SteerError::PolicyBlock {
+                rule: "R1".to_string()
+            }
+            .to_string(),
             "blocked by policy: R1"
         );
         assert_eq!(
-            SteerError::PiiBlock { pattern: "ssn".to_string() }.to_string(),
+            SteerError::PiiBlock {
+                pattern: "ssn".to_string()
+            }
+            .to_string(),
             "PII detected: ssn"
         );
         assert_eq!(SteerError::NoApiKey.to_string(), "no API key configured");

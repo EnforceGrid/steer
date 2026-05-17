@@ -1,11 +1,14 @@
-use axum::{Extension, Json, extract::{Path, Query}};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use std::sync::Arc;
-use serde::Deserialize;
-use serde_json::json;
 use crate::handover::{HoldStatus, HoldStore};
 use crate::middleware::TenantContext;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::{
+    extract::{Path, Query},
+    Extension, Json,
+};
+use serde::Deserialize;
+use serde_json::json;
+use std::sync::Arc;
 
 pub async fn get_hold(
     Path(hold_id): Path<String>,
@@ -60,7 +63,10 @@ pub async fn list_holds(
         _ => None,
     });
 
-    let tenant_id = ctx.as_ref().map(|Extension(c)| c.tenant_id.as_str()).unwrap_or("default");
+    let tenant_id = ctx
+        .as_ref()
+        .map(|Extension(c)| c.tenant_id.as_str())
+        .unwrap_or("default");
     let all = store.list_for_tenant(tenant_id, status_filter.as_ref());
 
     let limit = params.limit.unwrap_or(50).min(200);
@@ -68,10 +74,7 @@ pub async fn list_holds(
     let total = all.len();
     let has_more = offset + limit < total;
 
-    let page: Vec<_> = all.into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect();
+    let page: Vec<_> = all.into_iter().skip(offset).take(limit).collect();
 
     Json(json!({
         "holds": page,

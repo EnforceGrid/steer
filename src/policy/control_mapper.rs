@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 /// Detector signal input — matches the typed signal structure from detectors.
 /// Defined locally to avoid cross-branch coupling during parallel development.
@@ -57,7 +57,8 @@ impl ControlFacts {
         let mut families: HashMap<String, HashMap<String, Value>> = HashMap::new();
         for (key, value) in &self.facts {
             if let Some((family, field)) = key.split_once('.') {
-                families.entry(family.to_string())
+                families
+                    .entry(family.to_string())
                     .or_default()
                     .insert(field.to_string(), value.clone());
             }
@@ -80,13 +81,13 @@ impl ControlFacts {
                 && value.as_bool() == Some(true)
             {
                 if let Some((_, field)) = key.split_once('.') {
-                        let detector_label = field
-                            .trim_end_matches("_detected")
-                            .trim_end_matches("_present");
-                        if !labels.contains(&detector_label.to_string()) {
-                            labels.push(detector_label.to_string());
-                        }
+                    let detector_label = field
+                        .trim_end_matches("_detected")
+                        .trim_end_matches("_present");
+                    if !labels.contains(&detector_label.to_string()) {
+                        labels.push(detector_label.to_string());
                     }
+                }
             }
         }
         labels.sort();
@@ -102,49 +103,87 @@ impl ControlFacts {
 fn map_signal(signal: &DetectorSignal) -> Vec<(String, Value)> {
     match signal.detector.as_str() {
         "injection" => vec![
-            ("agent_integrity.injection_detected".into(), json!(signal.flag)),
-            ("agent_integrity.injection_score".into(), json!((signal.score * 100.0) as i64)),
-            ("agent_integrity.injection_type".into(),
-                json!(signal.metadata.get("type").unwrap_or(&json!("")))),
+            (
+                "agent_integrity.injection_detected".into(),
+                json!(signal.flag),
+            ),
+            (
+                "agent_integrity.injection_score".into(),
+                json!((signal.score * 100.0) as i64),
+            ),
+            (
+                "agent_integrity.injection_type".into(),
+                json!(signal.metadata.get("type").unwrap_or(&json!(""))),
+            ),
         ],
         "jailbreak" => vec![
-            ("agent_integrity.jailbreak_detected".into(), json!(signal.flag)),
-            ("agent_integrity.jailbreak_score".into(), json!((signal.score * 100.0) as i64)),
+            (
+                "agent_integrity.jailbreak_detected".into(),
+                json!(signal.flag),
+            ),
+            (
+                "agent_integrity.jailbreak_score".into(),
+                json!((signal.score * 100.0) as i64),
+            ),
         ],
-        "confidential" => vec![
-            ("data_protection.confidential_detected".into(), json!(signal.flag)),
-        ],
+        "confidential" => vec![(
+            "data_protection.confidential_detected".into(),
+            json!(signal.flag),
+        )],
         "exfiltration" => vec![
-            ("data_protection.exfiltration_detected".into(), json!(signal.flag)),
-            ("data_protection.exfiltration_risk".into(), json!((signal.score * 100.0) as i64)),
-            ("data_protection.exfiltration_url_count".into(),
-                json!(signal.metadata.get("url_count").unwrap_or(&json!(0)))),
+            (
+                "data_protection.exfiltration_detected".into(),
+                json!(signal.flag),
+            ),
+            (
+                "data_protection.exfiltration_risk".into(),
+                json!((signal.score * 100.0) as i64),
+            ),
+            (
+                "data_protection.exfiltration_url_count".into(),
+                json!(signal.metadata.get("url_count").unwrap_or(&json!(0))),
+            ),
         ],
         "threat" => vec![
             ("content_safety.threat_detected".into(), json!(signal.flag)),
-            ("content_safety.threat_score".into(), json!((signal.score * 100.0) as i64)),
+            (
+                "content_safety.threat_score".into(),
+                json!((signal.score * 100.0) as i64),
+            ),
         ],
-        "toxicity" => vec![
-            ("content_safety.toxicity_score".into(), json!((signal.score * 100.0) as i64)),
-        ],
-        "identity_claim" => vec![
-            ("identity_safety.disclosure_detected".into(), json!(signal.flag)),
-        ],
+        "toxicity" => vec![(
+            "content_safety.toxicity_score".into(),
+            json!((signal.score * 100.0) as i64),
+        )],
+        "identity_claim" => vec![(
+            "identity_safety.disclosure_detected".into(),
+            json!(signal.flag),
+        )],
         "bias" => vec![
             ("content_safety.bias_detected".into(), json!(signal.flag)),
-            ("content_safety.bias_score".into(), json!((signal.score * 100.0) as i64)),
+            (
+                "content_safety.bias_score".into(),
+                json!((signal.score * 100.0) as i64),
+            ),
         ],
         "tool_governance" => vec![
-            ("tool_governance.unauthorized_detected".into(), json!(signal.flag)),
+            (
+                "tool_governance.unauthorized_detected".into(),
+                json!(signal.flag),
+            ),
             // Note: unauthorized_tools and highest_risk are evidence-only fields for
             // audit trail forensics. They are NOT injected into the flat Cedar context
             // (which uses `unauthorized_tool_detected: bool` from ContextParams).
             // The nested ControlFacts::to_cedar_context() emits them but that path
             // is not used in the main evaluation pipeline.
-            ("tool_governance.unauthorized_tools".into(),
-                json!(signal.metadata.get("tool_names").unwrap_or(&json!([])))),
-            ("tool_governance.highest_risk".into(),
-                json!(signal.metadata.get("risk_category").unwrap_or(&json!("")))),
+            (
+                "tool_governance.unauthorized_tools".into(),
+                json!(signal.metadata.get("tool_names").unwrap_or(&json!([]))),
+            ),
+            (
+                "tool_governance.highest_risk".into(),
+                json!(signal.metadata.get("risk_category").unwrap_or(&json!(""))),
+            ),
         ],
         _ => vec![],
     }
@@ -186,9 +225,18 @@ mod tests {
         let signal = make_signal_with_meta("injection", true, 0.91, meta);
         let facts = ControlFacts::from_signals(&[signal], None);
 
-        assert_eq!(facts.get("agent_integrity.injection_detected"), Some(&json!(true)));
-        assert_eq!(facts.get("agent_integrity.injection_score"), Some(&json!(91)));
-        assert_eq!(facts.get("agent_integrity.injection_type"), Some(&json!("indirect")));
+        assert_eq!(
+            facts.get("agent_integrity.injection_detected"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            facts.get("agent_integrity.injection_score"),
+            Some(&json!(91))
+        );
+        assert_eq!(
+            facts.get("agent_integrity.injection_type"),
+            Some(&json!("indirect"))
+        );
     }
 
     #[test]
@@ -196,8 +244,14 @@ mod tests {
         let signal = make_signal("jailbreak", true, 0.85);
         let facts = ControlFacts::from_signals(&[signal], None);
 
-        assert_eq!(facts.get("agent_integrity.jailbreak_detected"), Some(&json!(true)));
-        assert_eq!(facts.get("agent_integrity.jailbreak_score"), Some(&json!(85)));
+        assert_eq!(
+            facts.get("agent_integrity.jailbreak_detected"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            facts.get("agent_integrity.jailbreak_score"),
+            Some(&json!(85))
+        );
     }
 
     #[test]
@@ -205,7 +259,10 @@ mod tests {
         let signal = make_signal("confidential", true, 1.0);
         let facts = ControlFacts::from_signals(&[signal], None);
 
-        assert_eq!(facts.get("data_protection.confidential_detected"), Some(&json!(true)));
+        assert_eq!(
+            facts.get("data_protection.confidential_detected"),
+            Some(&json!(true))
+        );
     }
 
     #[test]
@@ -215,9 +272,18 @@ mod tests {
         let signal = make_signal_with_meta("exfiltration", true, 0.72, meta);
         let facts = ControlFacts::from_signals(&[signal], None);
 
-        assert_eq!(facts.get("data_protection.exfiltration_detected"), Some(&json!(true)));
-        assert_eq!(facts.get("data_protection.exfiltration_risk"), Some(&json!(72)));
-        assert_eq!(facts.get("data_protection.exfiltration_url_count"), Some(&json!(3)));
+        assert_eq!(
+            facts.get("data_protection.exfiltration_detected"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            facts.get("data_protection.exfiltration_risk"),
+            Some(&json!(72))
+        );
+        assert_eq!(
+            facts.get("data_protection.exfiltration_url_count"),
+            Some(&json!(3))
+        );
     }
 
     #[test]
@@ -225,7 +291,10 @@ mod tests {
         let signal = make_signal("threat", true, 0.60);
         let facts = ControlFacts::from_signals(&[signal], None);
 
-        assert_eq!(facts.get("content_safety.threat_detected"), Some(&json!(true)));
+        assert_eq!(
+            facts.get("content_safety.threat_detected"),
+            Some(&json!(true))
+        );
         assert_eq!(facts.get("content_safety.threat_score"), Some(&json!(60)));
     }
 
@@ -242,7 +311,10 @@ mod tests {
         let signal = make_signal("identity_claim", true, 1.0);
         let facts = ControlFacts::from_signals(&[signal], None);
 
-        assert_eq!(facts.get("identity_safety.disclosure_detected"), Some(&json!(true)));
+        assert_eq!(
+            facts.get("identity_safety.disclosure_detected"),
+            Some(&json!(true))
+        );
     }
 
     #[test]
@@ -253,9 +325,18 @@ mod tests {
         let signal = make_signal_with_meta("tool_governance", true, 0.99, meta);
         let facts = ControlFacts::from_signals(&[signal], None);
 
-        assert_eq!(facts.get("tool_governance.unauthorized_detected"), Some(&json!(true)));
-        assert_eq!(facts.get("tool_governance.unauthorized_tools"), Some(&json!(["curl", "wget"])));
-        assert_eq!(facts.get("tool_governance.highest_risk"), Some(&json!("high")));
+        assert_eq!(
+            facts.get("tool_governance.unauthorized_detected"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            facts.get("tool_governance.unauthorized_tools"),
+            Some(&json!(["curl", "wget"]))
+        );
+        assert_eq!(
+            facts.get("tool_governance.highest_risk"),
+            Some(&json!("high"))
+        );
     }
 
     #[test]
@@ -277,7 +358,10 @@ mod tests {
         let facts = ControlFacts::from_signals(&[], Some(&pii));
 
         assert_eq!(facts.get("data_protection.pii_present"), Some(&json!(true)));
-        assert_eq!(facts.get("data_protection.pii_types"), Some(&json!(["email", "ssn"])));
+        assert_eq!(
+            facts.get("data_protection.pii_types"),
+            Some(&json!(["email", "ssn"]))
+        );
         assert_eq!(facts.get("data_protection.pii_count"), Some(&json!(4)));
     }
 
@@ -290,15 +374,9 @@ mod tests {
         let ctx = ControlFacts::from_signals(&signals, None).to_cedar_context();
 
         assert!(ctx.get("agent_integrity").is_some());
-        assert_eq!(
-            ctx["agent_integrity"]["injection_detected"],
-            json!(true)
-        );
+        assert_eq!(ctx["agent_integrity"]["injection_detected"], json!(true));
         assert!(ctx.get("content_safety").is_some());
-        assert_eq!(
-            ctx["content_safety"]["threat_score"],
-            json!(30)
-        );
+        assert_eq!(ctx["content_safety"]["threat_score"], json!(30));
     }
 
     #[test]
@@ -347,7 +425,10 @@ mod tests {
     fn score_scaling_091_to_91() {
         let signal = make_signal("injection", true, 0.91);
         let facts = ControlFacts::from_signals(&[signal], None);
-        assert_eq!(facts.get("agent_integrity.injection_score"), Some(&json!(91)));
+        assert_eq!(
+            facts.get("agent_integrity.injection_score"),
+            Some(&json!(91))
+        );
     }
 
     #[test]
@@ -356,17 +437,30 @@ mod tests {
         let one = make_signal("jailbreak", true, 1.0);
 
         let facts_zero = ControlFacts::from_signals(&[zero], None);
-        assert_eq!(facts_zero.get("content_safety.threat_score"), Some(&json!(0)));
+        assert_eq!(
+            facts_zero.get("content_safety.threat_score"),
+            Some(&json!(0))
+        );
 
         let facts_one = ControlFacts::from_signals(&[one], None);
-        assert_eq!(facts_one.get("agent_integrity.jailbreak_score"), Some(&json!(100)));
+        assert_eq!(
+            facts_one.get("agent_integrity.jailbreak_score"),
+            Some(&json!(100))
+        );
     }
 
     #[test]
     fn every_known_detector_produces_at_least_one_fact() {
         let detectors = [
-            "injection", "jailbreak", "confidential", "exfiltration",
-            "threat", "toxicity", "identity_claim", "bias", "tool_governance",
+            "injection",
+            "jailbreak",
+            "confidential",
+            "exfiltration",
+            "threat",
+            "toxicity",
+            "identity_claim",
+            "bias",
+            "tool_governance",
         ];
         for name in detectors {
             let signal = make_signal(name, true, 0.5);

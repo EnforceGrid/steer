@@ -1,11 +1,13 @@
+use crate::streaming::parsers::{SseFrame, StreamParser};
 use bytes::Bytes;
 use serde_json::json;
-use crate::streaming::parsers::{SseFrame, StreamParser};
 
 pub struct GeminiParser;
 
 impl StreamParser for GeminiParser {
-    fn provider(&self) -> &str { "gemini" }
+    fn provider(&self) -> &str {
+        "gemini"
+    }
 
     fn parse_frame(&self, raw: &[u8]) -> Vec<SseFrame> {
         // TODO(v1.1): implement Gemini streamGenerateContent SSE + NDJSON parser
@@ -39,7 +41,8 @@ impl StreamParser for GeminiParser {
 
     fn encode_steer(&self, message: &str, _prev_hash: &str) -> Bytes {
         // TODO(v1.1): Gemini steer shape
-        let payload = json!({"candidates":[{"content":{"parts":[{"text":message}]},"finishReason":"STOP"}]});
+        let payload =
+            json!({"candidates":[{"content":{"parts":[{"text":message}]},"finishReason":"STOP"}]});
         Bytes::from(format!("data: {}\n\n", payload))
     }
 }
@@ -49,7 +52,9 @@ mod tests {
     use super::*;
     use crate::streaming::parsers::StreamParser;
 
-    fn parser() -> GeminiParser { GeminiParser }
+    fn parser() -> GeminiParser {
+        GeminiParser
+    }
 
     #[test]
     fn parse_frame_passthrough() {

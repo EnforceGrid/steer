@@ -8,31 +8,41 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::response::Response;
-use chrono::{Utc, Timelike};
+use chrono::{Timelike, Utc};
 use chrono_tz::Tz;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 use tracing::warn;
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 use crate::audit::AuditSink;
 use crate::auth::resolve_auth_for_provider;
 use crate::config::SteerConfig;
+use crate::detectors::tool_governance::ToolGovernanceDetector;
+use crate::detectors::{ContentDetector, DetectionResult};
 use crate::error::SteerError;
 use crate::headers::{forward_headers, response_headers, EgHeaders};
-use crate::performance::{AnomalyProvider, PerformanceProvider, models::{PerformanceSample, PhaseTiming}};
+use crate::performance::{
+    models::{PerformanceSample, PhaseTiming},
+    AnomalyProvider, PerformanceProvider,
+};
 use crate::pii::{PiiFinding, RegexPiiEngine};
 use crate::policy::cedar::CedarEngine;
 use crate::policy::registry::TenantPolicyRegistry;
 use crate::policy::sync_promoter::SyncRequirements;
-use crate::detectors::{ContentDetector, DetectionResult};
-use crate::policy::{EnforcementAction, PolicyDecision, PolicyEngine, PolicyAction, PolicyInput, ContextParams, build_context};
+use crate::policy::{
+    build_context, ContextParams, EnforcementAction, PolicyAction, PolicyDecision, PolicyEngine,
+    PolicyInput,
+};
 use crate::routing::{build_upstream_url, resolve_route, rewrite_model_in_body};
 use crate::streaming::buffer::WordBoundaryBuffer;
 use crate::tenants::{TenantAuthProvider, TenantSettingsProvider};
-use crate::tokens::{BudgetCache, CostEstimator, TokenUsage, parse_usage, NewTokenUsage, RateLimitCheckResult, TokenProvider};
+use crate::tokens::{
+    parse_usage, BudgetCache, CostEstimator, NewTokenUsage, RateLimitCheckResult, TokenProvider,
+    TokenUsage,
+};
 
 /// Accumulated stats from the SSE enforced stream, sent back via oneshot for audit.
 struct StreamStats {
@@ -111,6 +121,8 @@ pub struct PipelineState {
     pub kill_switch: Arc<std::sync::atomic::AtomicBool>,
     /// Dynamic MCP server registry — admin API-driven allowlist (OWASP ASI04).
     pub mcp_registry: Arc<dyn crate::mcp_registry::McpRegistryProvider>,
+    /// Pre-built tool governance detector — avoids rebuilding the HashSet on every request.
+    pub tool_governance: ToolGovernanceDetector,
 }
 
 impl PipelineState {
@@ -138,12 +150,14 @@ impl PipelineState {
             return entry.value().clone();
         }
         // Slow path: auth provider lookup
-        let (tenant_id, bound_agent_id) = self.tenant_auth
+        let (tenant_id, bound_agent_id) = self
+            .tenant_auth
             .resolve_key(key)
             .ok()
             .map(|rk| (rk.tenant_id, rk.agent_id))
             .unwrap_or_else(|| ("default".to_string(), None));
-        self.tenant_id_cache.insert(key.to_string(), (tenant_id.clone(), bound_agent_id.clone()));
+        self.tenant_id_cache
+            .insert(key.to_string(), (tenant_id.clone(), bound_agent_id.clone()));
         (tenant_id, bound_agent_id)
     }
 }
@@ -192,14 +206,18 @@ pub async fn run(
     // When override_tenant is provided (e.g. from X-Steer-Tenant-Id via middleware), use it
     // as the tenant_id so service-key callers are stamped with the correct tenant in audit.
     let (resolved_tenant, bound_agent_id) = state.resolve_tenant(eg.api_key.as_deref());
-    let tenant_id = override_tenant.filter(|t| !t.is_empty() && t != "default").unwrap_or(resolved_tenant);
+    let tenant_id = override_tenant
+        .filter(|t| !t.is_empty() && t != "default")
+        .unwrap_or(resolved_tenant);
 
     // ── MCP supply chain check (OWASP ASI04) ──────────────────────────────
     let mcp_server_id_raw = eg.mcp_server_id.clone().unwrap_or_default();
     // Sanitize: malformed header values (control chars, >255 chars) treated as absent.
     let mcp_server_id_str = if !mcp_server_id_raw.is_empty()
         && mcp_server_id_raw.len() <= 255
-        && mcp_server_id_raw.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+        && mcp_server_id_raw
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
         mcp_server_id_raw
     } else {
@@ -230,7 +248,9 @@ pub async fn run(
     //   - eg-agent-id doesn't match → use bound_agent_id as-is
     // Reserved prefixes (abra:, steer:) are stripped from non-bound keys to prevent spoofing.
     let is_system_key = bound_agent_id.is_some()
-        && bound_agent_id.as_deref().is_some_and(|b| b.starts_with("abra:") || b.starts_with("steer:"));
+        && bound_agent_id
+            .as_deref()
+            .is_some_and(|b| b.starts_with("abra:") || b.starts_with("steer:"));
     let agent_id_str = match &bound_agent_id {
         Some(bound) => {
             // Extract prefix (everything up to and including first ':')
@@ -259,10 +279,18 @@ pub async fn run(
     let t = Instant::now();
     let body_str = std::str::from_utf8(&body_bytes).unwrap_or("{}");
     let body_json: Value = serde_json::from_str(body_str).unwrap_or(Value::Null);
-    let model = body_json.get("model").and_then(|m| m.as_str()).map(|s| s.to_string());
-    let is_streaming = body_json.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let model = body_json
+        .get("model")
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string());
+    let is_streaming = body_json
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
     let route = resolve_route(model.as_deref(), &state.config);
-    let model_approved = model.as_deref().map_or(false, |m| state.config.models.contains_key(m));
+    let model_approved = model
+        .as_deref()
+        .is_some_and(|m| state.config.models.contains_key(m));
 
     // ── Data residency compliance (AIUC-1 E004) ────────────────────────────
     let data_residency_compliant = match &tenant_settings.data_residency_region {
@@ -277,7 +305,10 @@ pub async fn run(
     // ── Org context fields ────────────────────────────────────────────────────
     let org_timezone_str = tenant_settings.timezone.as_deref().unwrap_or("UTC");
     let org_industry_str = tenant_settings.industry.as_deref().unwrap_or("other");
-    let org_region_str = tenant_settings.data_residency_region.as_deref().unwrap_or("");
+    let org_region_str = tenant_settings
+        .data_residency_region
+        .as_deref()
+        .unwrap_or("");
     let org_business_hours_active = compute_business_hours_active(
         org_timezone_str,
         tenant_settings.business_hours_window.as_deref(),
@@ -290,15 +321,16 @@ pub async fn run(
     // the same heuristic used in the fallback/retry loop below and fixes T-410:
     // Claude Code routes without an explicit `provider:` field were receiving
     // `Authorization: Bearer` instead of `x-api-key`.
-    let effective_provider: Option<&str> = route.provider_name.as_deref()
-        .or_else(|| {
-            if route.base_url.contains("anthropic.com") || uri.path().contains("/v1/messages") {
-                Some("anthropic")
-            } else {
-                None
-            }
-        });
-    if let Err(msg) = resolve_auth_for_provider(&mut fwd_headers, &route.api_key, effective_provider) {
+    let effective_provider: Option<&str> = route.provider_name.as_deref().or_else(|| {
+        if route.base_url.contains("anthropic.com") || uri.path().contains("/v1/messages") {
+            Some("anthropic")
+        } else {
+            None
+        }
+    });
+    if let Err(msg) =
+        resolve_auth_for_provider(&mut fwd_headers, &route.api_key, effective_provider)
+    {
         if !state.config.proxy.fail_open {
             return SteerError::NoApiKey.into_response();
         }
@@ -326,7 +358,8 @@ pub async fn run(
 
     // ── Phase 2c: Sync requirements lookup (cached per tenant) ────────────
     let tenant_engine = state.policy_registry.engine_for(&tenant_id);
-    let sync_reqs = state.sync_cache
+    let sync_reqs = state
+        .sync_cache
         .entry(tenant_id.clone())
         .or_insert_with(|| {
             let policy_text = tenant_engine.policy_text();
@@ -351,7 +384,10 @@ pub async fn run(
     let pii_result = if state.config.pii.enabled && !body_bytes.is_empty() && sync_reqs.pii_sync {
         state.pii_engine.scan_and_redact(body_str, "request")
     } else {
-        crate::pii::PiiScanResult { redacted_text: body_str.to_string(), findings: vec![] }
+        crate::pii::PiiScanResult {
+            redacted_text: body_str.to_string(),
+            findings: vec![],
+        }
     };
     let enforced_body = if !pii_result.findings.is_empty() {
         pii_result.redacted_text.as_bytes().to_vec()
@@ -361,9 +397,16 @@ pub async fn run(
     timing.pii_request_ms = Some(t.elapsed().as_secs_f64() * 1000.0);
 
     // Prepare masked request payload for audit retention
-    let retained_request_payload: Option<String> = match state.config.audit.retain_payloads.as_str() {
-        "masked" => Some(truncate_payload(&pii_result.redacted_text, state.config.audit.max_payload_bytes)),
-        "raw" => Some(truncate_payload(body_str, state.config.audit.max_payload_bytes)),
+    let retained_request_payload: Option<String> = match state.config.audit.retain_payloads.as_str()
+    {
+        "masked" => Some(truncate_payload(
+            &pii_result.redacted_text,
+            state.config.audit.max_payload_bytes,
+        )),
+        "raw" => Some(truncate_payload(
+            body_str,
+            state.config.audit.max_payload_bytes,
+        )),
         _ => None, // "never"
     };
 
@@ -396,11 +439,21 @@ pub async fn run(
         };
 
     let detector_results: &[DetectionResult] = &sync_detector_results;
-    let injection_result = detector_results.iter().find(|r| r.detector_type == "injection");
-    let jailbreak_result = detector_results.iter().find(|r| r.detector_type == "jailbreak");
-    let threat_result = detector_results.iter().find(|r| r.detector_type == "threat");
-    let identity_result = detector_results.iter().find(|r| r.detector_type == "identity_claim");
-    let confidential_result = detector_results.iter().find(|r| r.detector_type == "confidential");
+    let injection_result = detector_results
+        .iter()
+        .find(|r| r.detector_type == "injection");
+    let jailbreak_result = detector_results
+        .iter()
+        .find(|r| r.detector_type == "jailbreak");
+    let threat_result = detector_results
+        .iter()
+        .find(|r| r.detector_type == "threat");
+    let identity_result = detector_results
+        .iter()
+        .find(|r| r.detector_type == "identity_claim");
+    let confidential_result = detector_results
+        .iter()
+        .find(|r| r.detector_type == "confidential");
     let bias_result = detector_results.iter().find(|r| r.detector_type == "bias");
 
     let injection_detected = injection_result.is_some_and(|r| r.detected);
@@ -424,16 +477,20 @@ pub async fn run(
         model: model.as_deref().unwrap_or("").to_string(),
         provider: "openai".to_string(),
     };
-    let _estimated_cost_usd = state.cost_estimator.estimate(
-        model.as_deref().unwrap_or(""),
-        &heuristic_usage,
-    );
+    let _estimated_cost_usd = state
+        .cost_estimator
+        .estimate(model.as_deref().unwrap_or(""), &heuristic_usage);
 
     // Check budgets: prefer api_key scope, then tenant, then agent
-    let budget_status = api_key_hash.as_deref()
+    let budget_status = api_key_hash
+        .as_deref()
         .and_then(|kh| state.budget_cache.check("api_key", kh))
         .or_else(|| {
-            if tenant_id != "default" { state.budget_cache.check("tenant", &tenant_id) } else { None }
+            if tenant_id != "default" {
+                state.budget_cache.check("tenant", &tenant_id)
+            } else {
+                None
+            }
         })
         .or_else(|| state.budget_cache.check("agent", agent_scope_id));
 
@@ -447,15 +504,7 @@ pub async fn run(
     // Zero-config allowlist/denylist enforcement on incoming tool requests.
     // Does not block here — signals are injected into Cedar context for policy eval.
     let tool_gov_result = if !requested_tools.is_empty() {
-        use crate::detectors::tool_governance::{ToolGovernanceDetector, ToolGovernanceConfig};
-        use std::collections::HashSet;
-        let tg_config = &state.config.detectors.tool_governance;
-        let gov_config = ToolGovernanceConfig {
-            allowed_tools: tg_config.allowed_tools.iter().cloned().collect::<HashSet<_>>(),
-            block_in_allowlist_mode: tg_config.block_in_allowlist_mode,
-        };
-        let det = ToolGovernanceDetector::new(gov_config);
-        det.scan_tools(&requested_tools)
+        state.tool_governance.scan_tools(&requested_tools)
     } else {
         crate::detectors::tool_governance::ToolGovernanceResult::default()
     };
@@ -463,7 +512,9 @@ pub async fn run(
 
     // ── Phase 3e: Exfiltration scan (request) ─────────────────────────────
     // Catches pre-staged exfiltration instructions embedded in request prompts.
-    let req_exfil_result = detector_results.iter().find(|r| r.detector_type == "exfiltration");
+    let req_exfil_result = detector_results
+        .iter()
+        .find(|r| r.detector_type == "exfiltration");
     let req_exfil_detected = req_exfil_result.is_some_and(|r| r.detected);
     let req_exfil_type_str = req_exfil_result
         .and_then(|r| r.findings.first())
@@ -477,7 +528,11 @@ pub async fn run(
     // ── Phase 4: Policy evaluation (request) ────────────────────────────────
     let t = Instant::now();
     let request_action = PolicyAction::from_path(uri.path());
-    let principal = if agent_id_str.is_empty() { "anonymous" } else { &agent_id_str };
+    let principal = if agent_id_str.is_empty() {
+        "anonymous"
+    } else {
+        &agent_id_str
+    };
     // Budget: -1 means "no budget configured" so Cedar policies can
     // distinguish "no budget" from "budget at zero".
     let has_budget = budget_status.is_some();
@@ -487,8 +542,16 @@ pub async fn run(
         pii_detected: !pii_result.findings.is_empty(),
         risk_level,
         requested_tools: &requested_tools,
-        budget_remaining_cents: if has_budget { (budget_remaining_usd * 100.0) as i64 } else { -1 },
-        budget_utilization_pct: if has_budget { budget_utilization_pct as i64 } else { -1 },
+        budget_remaining_cents: if has_budget {
+            (budget_remaining_usd * 100.0) as i64
+        } else {
+            -1
+        },
+        budget_utilization_pct: if has_budget {
+            budget_utilization_pct as i64
+        } else {
+            -1
+        },
         injection_detected,
         jailbreak_detected,
         threat_detected,
@@ -518,7 +581,8 @@ pub async fn run(
         ..Default::default()
     };
     let policy_context = build_cedar_context_compat(&request_context_params);
-    let request_policy_input = PolicyInput::new(principal, request_action, "request", policy_context.clone());
+    let request_policy_input =
+        PolicyInput::new(principal, request_action, "request", policy_context.clone());
     // System keys (abra:*, steer:*) bypass tenant Cedar evaluation entirely.
     // Cedar's forbid-wins-over-permit model means a tenant forbid(principal, action, resource)
     // would block system agents even with an explicit permit — so we skip Cedar for system calls.
@@ -565,7 +629,9 @@ pub async fn run(
         let overhead_ms = start.elapsed().as_secs_f64() * 1000.0;
         let req_payload_ref = if should_retain_payload(&state.config.audit, "block") {
             retained_request_payload.as_deref()
-        } else { None };
+        } else {
+            None
+        };
         let entry = build_audit_entry(AuditParams {
             audit_id: &audit_id,
             request_id: &eg.request_id,
@@ -584,7 +650,12 @@ pub async fn run(
             matched_rules: &request_decision.matched_rules,
             retries_made: 0,
             fallback_triggered: false,
-            labels: &build_labels(detector_results, &pii_result.findings, "block", request_decision.rule_id.as_deref()),
+            labels: &build_labels(
+                detector_results,
+                &pii_result.findings,
+                "block",
+                request_decision.rule_id.as_deref(),
+            ),
             request_payload: req_payload_ref,
             response_payload: None, // no upstream call was made
             tenant_id: &tenant_id,
@@ -593,11 +664,23 @@ pub async fn run(
             hold_id: None,
         });
         state.audit_sink.write(entry);
-        record_perf(state, &eg, model.as_deref(), route.provider_name.as_deref(), is_streaming, 0.0, &timing);
+        record_perf(
+            state,
+            &eg,
+            model.as_deref(),
+            route.provider_name.as_deref(),
+            is_streaming,
+            0.0,
+            &timing,
+        );
         let mut resp = SteerError::PolicyBlock {
-            rule: request_decision.rule_id.unwrap_or_else(|| "policy_block".to_string())
-        }.into_response();
-        resp.headers_mut().insert("eg-audit-id", audit_id.parse().unwrap());
+            rule: request_decision
+                .rule_id
+                .unwrap_or_else(|| "policy_block".to_string()),
+        }
+        .into_response();
+        resp.headers_mut()
+            .insert("eg-audit-id", audit_id.parse().unwrap());
         if let Ok(hv) = request_policy_input.to_header_value(4096).parse() {
             resp.headers_mut().insert("eg-policy-input", hv);
         }
@@ -624,7 +707,8 @@ pub async fn run(
         if let Some(ref condition) = fb.condition {
             if condition == "budget_exceeded" {
                 // Only include this fallback if the budget is actually exceeded
-                let budget_exceeded = budget_status.as_ref()
+                let budget_exceeded = budget_status
+                    .as_ref()
                     .map(|s| s.remaining_usd <= 0.0)
                     .unwrap_or(false);
                 if !budget_exceeded {
@@ -652,7 +736,9 @@ pub async fn run(
     let mut fallback_triggered = false;
     let mut used_model = primary_model.clone();
 
-    'outer: for (target_idx, (base_url, api_key, model_override, provider)) in attempt_targets.iter().enumerate() {
+    'outer: for (target_idx, (base_url, api_key, model_override, provider)) in
+        attempt_targets.iter().enumerate()
+    {
         // Rewrite model in body if the fallback uses a different model
         let current_body: Vec<u8> = if let Some(ref m) = model_override {
             if model_override != &primary_model {
@@ -667,33 +753,31 @@ pub async fn run(
         let upstream_url = build_upstream_url(base_url, uri.path(), uri.query());
         let mut req_headers_for_upstream = fwd_headers.clone();
         // Detect provider: explicit from route, or infer from base_url / request path
-        let effective_provider = provider.as_deref()
-            .or_else(|| {
-                if base_url.contains("anthropic.com") || uri.path().contains("/v1/messages") {
-                    Some("anthropic")
-                } else {
-                    None
-                }
-            });
+        let effective_provider = provider.as_deref().or_else(|| {
+            if base_url.contains("anthropic.com") || uri.path().contains("/v1/messages") {
+                Some("anthropic")
+            } else {
+                None
+            }
+        });
         if !api_key.is_empty() {
             let has_auth = req_headers_for_upstream.contains_key("authorization")
                 || req_headers_for_upstream.contains_key("x-api-key");
             if !has_auth {
-                let is_anthropic = effective_provider
-                    .is_some_and(|p| p.eq_ignore_ascii_case("anthropic"));
+                let is_anthropic =
+                    effective_provider.is_some_and(|p| p.eq_ignore_ascii_case("anthropic"));
                 if is_anthropic {
                     req_headers_for_upstream.insert("x-api-key".to_string(), api_key.clone());
                 } else {
-                    req_headers_for_upstream.insert(
-                        "authorization".to_string(),
-                        format!("Bearer {}", api_key),
-                    );
+                    req_headers_for_upstream
+                        .insert("authorization".to_string(), format!("Bearer {}", api_key));
                 }
             }
         }
 
         for attempt in 0..=max_retries {
-            let result = state.http_client
+            let result = state
+                .http_client
                 .request(method.clone(), &upstream_url)
                 .timeout(timeout)
                 .headers(map_to_header_map(&req_headers_for_upstream))
@@ -719,19 +803,26 @@ pub async fn run(
                         continue; // retry same target
                     }
                     // exhausted retries on this target — try next fallback
-                    if target_idx > 0 { fallback_triggered = true; }
+                    if target_idx > 0 {
+                        fallback_triggered = true;
+                    }
                     continue 'outer;
                 }
                 Ok(resp) => {
                     // Success (2xx/3xx/4xx are terminal — don't retry client errors)
-                    if target_idx > 0 { fallback_triggered = true; }
+                    if target_idx > 0 {
+                        fallback_triggered = true;
+                    }
                     used_model = model_override.clone();
                     timing.upstream_ms = upstream_start.elapsed().as_secs_f64() * 1000.0;
                     last_response = Some(resp);
                     break 'outer;
                 }
                 Err(e) if e.is_timeout() => {
-                    return SteerError::UpstreamTimeout { ms: state.config.proxy.timeout_ms }.into_response();
+                    return SteerError::UpstreamTimeout {
+                        ms: state.config.proxy.timeout_ms,
+                    }
+                    .into_response();
                 }
                 Err(e) => {
                     last_response = None;
@@ -759,10 +850,14 @@ pub async fn run(
     let status = upstream_resp.status();
     let resp_hdr_map = upstream_resp.headers().clone();
     let resp_headers_map = response_headers(&resp_hdr_map);
-    let content_type = resp_headers_map.get("content-type").cloned().unwrap_or_default();
+    let content_type = resp_headers_map
+        .get("content-type")
+        .cloned()
+        .unwrap_or_default();
     let is_sse = content_type.contains("text/event-stream");
 
-    let axum_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let axum_status =
+        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     // ── Async enrichment (fire-and-forget) ──────────────────────────────────
     // Run remaining (non-sync) detectors and PII scan_only in a background
@@ -782,7 +877,8 @@ pub async fn run(
             let enrich_start = Instant::now();
 
             // Run async detectors
-            let async_results: Vec<DetectionResult> = async_indices.iter()
+            let async_results: Vec<DetectionResult> = async_indices
+                .iter()
                 .map(|&i| async_detectors_arc[i].scan(&text_clone))
                 .collect();
 
@@ -795,7 +891,8 @@ pub async fn run(
 
             let latency = enrich_start.elapsed().as_secs_f64() * 1000.0;
 
-            let async_detected: Vec<&str> = async_results.iter()
+            let async_detected: Vec<&str> = async_results
+                .iter()
                 .filter(|r| r.detected)
                 .map(|r| r.detector_type.as_str())
                 .collect();
@@ -810,21 +907,30 @@ pub async fn run(
             );
 
             // Build detector snapshot from async results
-            let detector_snapshot = serde_json::json!(
-                async_results.iter().map(|r| {
-                    (r.detector_type.clone(), serde_json::json!({
-                        "detected": r.detected,
-                        "confidence": r.confidence,
-                        "findings_count": r.findings.len(),
-                    }))
-                }).collect::<serde_json::Map<String, serde_json::Value>>()
-            );
+            let detector_snapshot = serde_json::json!(async_results
+                .iter()
+                .map(|r| {
+                    (
+                        r.detector_type.clone(),
+                        serde_json::json!({
+                            "detected": r.detected,
+                            "confidence": r.confidence,
+                            "findings_count": r.findings.len(),
+                        }),
+                    )
+                })
+                .collect::<serde_json::Map<String, serde_json::Value>>());
 
             // Build evidence labels from detected signals
-            let evidence_labels: Vec<String> = async_results.iter()
+            let evidence_labels: Vec<String> = async_results
+                .iter()
                 .filter(|r| r.detected)
                 .map(|r| r.detector_type.clone())
-                .chain(if !pii_findings.is_empty() { vec!["pii".to_string()] } else { vec![] })
+                .chain(if !pii_findings.is_empty() {
+                    vec!["pii".to_string()]
+                } else {
+                    vec![]
+                })
                 .collect();
 
             // Only write enrichment entry if there's something to report
@@ -838,7 +944,7 @@ pub async fn run(
                     &evidence_labels,
                     latency,
                 );
-                audit_writer_enrich.write(entry);  // audit_writer_enrich is Arc<dyn AuditSink>
+                audit_writer_enrich.write(entry); // audit_writer_enrich is Arc<dyn AuditSink>
             }
         });
     }
@@ -1438,18 +1544,31 @@ pub async fn run(
             }
         });
 
-        record_perf(state, &eg, model.as_deref(), route.provider_name.as_deref(), is_streaming, timing.upstream_ms, &timing);
+        record_perf(
+            state,
+            &eg,
+            model.as_deref(),
+            route.provider_name.as_deref(),
+            is_streaming,
+            timing.upstream_ms,
+            &timing,
+        );
         let mut builder = axum::response::Response::builder().status(axum_status);
         for (k, v) in &resp_headers_map {
             builder = builder.header(k.as_str(), v.as_str());
         }
         builder = builder.header("x-request-id", eg.request_id.as_str());
         builder = builder.header("eg-audit-id", audit_id.as_str());
-        if let Ok(hv) = request_policy_input.to_header_value(4096).parse::<axum::http::HeaderValue>() {
+        if let Ok(hv) = request_policy_input
+            .to_header_value(4096)
+            .parse::<axum::http::HeaderValue>()
+        {
             builder = builder.header("eg-policy-input", hv);
         }
         let body = Body::from_stream(enforced_stream);
-        return builder.body(body).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        return builder
+            .body(body)
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     }
 
     // Non-SSE: read full body, scan only message content for PII.
@@ -1460,17 +1579,18 @@ pub async fn run(
     let raw = upstream_resp.bytes().await.unwrap_or_default();
     // Response-side PII scan only when response enforcement is active.
     // Observation-mode tenants skip this entirely (zero overhead on response path).
-    let resp_body_bytes: bytes::Bytes = if sync_reqs.has_response_enforcement && state.config.pii.enabled && !raw.is_empty() {
-        let text = std::str::from_utf8(&raw).unwrap_or("");
-        let r = state.pii_engine.scan_and_redact_response(text, "response");
-        if !r.findings.is_empty() {
-            bytes::Bytes::from(r.redacted_text.into_bytes())
+    let resp_body_bytes: bytes::Bytes =
+        if sync_reqs.has_response_enforcement && state.config.pii.enabled && !raw.is_empty() {
+            let text = std::str::from_utf8(&raw).unwrap_or("");
+            let r = state.pii_engine.scan_and_redact_response(text, "response");
+            if !r.findings.is_empty() {
+                bytes::Bytes::from(r.redacted_text.into_bytes())
+            } else {
+                raw // zero-copy: reuse the Bytes buffer from reqwest
+            }
         } else {
             raw // zero-copy: reuse the Bytes buffer from reqwest
-        }
-    } else {
-        raw // zero-copy: reuse the Bytes buffer from reqwest
-    };
+        };
     timing.pii_response_ms = Some(t.elapsed().as_secs_f64() * 1000.0);
 
     // ── Phase 6b: Exfiltration scan (response) ──────────────────────────────
@@ -1483,7 +1603,9 @@ pub async fn run(
             det.scan(resp_text_for_exfil)
         };
         let detected = resp_exfil_result.detected;
-        let type_str = resp_exfil_result.findings.first()
+        let type_str = resp_exfil_result
+            .findings
+            .first()
             .map(|f| f.category.clone())
             .unwrap_or_default();
         (detected, type_str)
@@ -1501,15 +1623,7 @@ pub async fn run(
     let response_action = PolicyAction::from_response(response_tool_count > 0);
     // Response-side tool governance for tool calls in the LLM response
     let resp_tool_gov_result = if response_tool_count > 0 {
-        use crate::detectors::tool_governance::{ToolGovernanceDetector, ToolGovernanceConfig};
-        use std::collections::HashSet;
-        let tg_config = &state.config.detectors.tool_governance;
-        let gov_config = ToolGovernanceConfig {
-            allowed_tools: tg_config.allowed_tools.iter().cloned().collect::<HashSet<_>>(),
-            block_in_allowlist_mode: tg_config.block_in_allowlist_mode,
-        };
-        let det = ToolGovernanceDetector::new(gov_config);
-        det.scan_tools(&response_tool_names)
+        state.tool_governance.scan_tools(&response_tool_names)
     } else {
         crate::detectors::tool_governance::ToolGovernanceResult::default()
     };
@@ -1523,9 +1637,20 @@ pub async fn run(
             risk_level,
             tool_names: &response_tool_names,
             tool_count: response_tool_count as i64,
-            tool_name: response_tool_names.first().map(|s| s.as_str()).unwrap_or(""),
-            budget_remaining_cents: if has_budget { (budget_remaining_usd * 100.0) as i64 } else { -1 },
-            budget_utilization_pct: if has_budget { budget_utilization_pct as i64 } else { -1 },
+            tool_name: response_tool_names
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or(""),
+            budget_remaining_cents: if has_budget {
+                (budget_remaining_usd * 100.0) as i64
+            } else {
+                -1
+            },
+            budget_utilization_pct: if has_budget {
+                budget_utilization_pct as i64
+            } else {
+                -1
+            },
             // Exfiltration (response-side)
             exfiltration_detected: resp_exfil_detected,
             exfiltration_type: &resp_exfil_type_str,
@@ -1545,8 +1670,6 @@ pub async fn run(
             mcp_server_id: &mcp_server_id_str,
             ..Default::default()
         });
-        let resp_policy_input = PolicyInput::new(principal, response_action, "response", resp_context.clone());
-        let _ = resp_policy_input; // will be used for debug header later
         let cedar_t = Instant::now();
         let decision = tenant_engine.evaluate_response(
             principal,
@@ -1565,26 +1688,31 @@ pub async fn run(
     timing.tool_check_ms = Some(t.elapsed().as_secs_f64() * 1000.0);
 
     // Prepare masked response payload for audit retention
-    let retained_response_payload: Option<String> = match state.config.audit.retain_payloads.as_str() {
-        "masked" | "raw" => {
-            // resp_body_bytes is already post-PII-scan for "masked"; for "raw" we'd need the original
-            // but since the response PII scan is in-place, masked is all we have. This is fine —
-            // "raw" for responses means "as received after PII scan" which is the safe default.
-            let text = std::str::from_utf8(&resp_body_bytes).unwrap_or("");
-            Some(truncate_payload(text, state.config.audit.max_payload_bytes))
-        }
-        _ => None,
-    };
+    let retained_response_payload: Option<String> =
+        match state.config.audit.retain_payloads.as_str() {
+            "masked" | "raw" => {
+                // resp_body_bytes is already post-PII-scan for "masked"; for "raw" we'd need the original
+                // but since the response PII scan is in-place, masked is all we have. This is fine —
+                // "raw" for responses means "as received after PII scan" which is the safe default.
+                let text = std::str::from_utf8(&resp_body_bytes).unwrap_or("");
+                Some(truncate_payload(text, state.config.audit.max_payload_bytes))
+            }
+            _ => None,
+        };
 
     // If response policy blocks, return 403 instead of the upstream response
     if response_decision.action == EnforcementAction::Block {
         let total_overhead = start.elapsed().as_secs_f64() * 1000.0 - timing.upstream_ms;
         let req_payload_ref = if should_retain_payload(&state.config.audit, "block") {
             retained_request_payload.as_deref()
-        } else { None };
+        } else {
+            None
+        };
         let resp_payload_ref = if should_retain_payload(&state.config.audit, "block") {
             retained_response_payload.as_deref()
-        } else { None };
+        } else {
+            None
+        };
         let entry = build_audit_entry(AuditParams {
             audit_id: &audit_id,
             request_id: &eg.request_id,
@@ -1603,7 +1731,12 @@ pub async fn run(
             matched_rules: &response_decision.matched_rules,
             retries_made,
             fallback_triggered,
-            labels: &build_labels(detector_results, &pii_result.findings, "block", response_decision.rule_id.as_deref()),
+            labels: &build_labels(
+                detector_results,
+                &pii_result.findings,
+                "block",
+                response_decision.rule_id.as_deref(),
+            ),
             request_payload: req_payload_ref,
             response_payload: resp_payload_ref,
             tenant_id: &tenant_id,
@@ -1612,11 +1745,23 @@ pub async fn run(
             hold_id: None,
         });
         state.audit_sink.write(entry);
-        record_perf(state, &eg, model.as_deref(), route.provider_name.as_deref(), is_streaming, timing.upstream_ms, &timing);
+        record_perf(
+            state,
+            &eg,
+            model.as_deref(),
+            route.provider_name.as_deref(),
+            is_streaming,
+            timing.upstream_ms,
+            &timing,
+        );
         let mut resp = SteerError::PolicyBlock {
-            rule: response_decision.rule_id.unwrap_or_else(|| "response_tool_policy".to_string()),
-        }.into_response();
-        resp.headers_mut().insert("eg-audit-id", audit_id.parse().unwrap());
+            rule: response_decision
+                .rule_id
+                .unwrap_or_else(|| "response_tool_policy".to_string()),
+        }
+        .into_response();
+        resp.headers_mut()
+            .insert("eg-audit-id", audit_id.parse().unwrap());
         if let Ok(hv) = request_policy_input.to_header_value(4096).parse() {
             resp.headers_mut().insert("eg-policy-input", hv);
         }
@@ -1634,8 +1779,14 @@ pub async fn run(
     // Parse token usage from the response body and record asynchronously.
     {
         let body_for_tokens = resp_body_bytes.clone();
-        let provider_str = route.provider_name.clone().unwrap_or_else(|| "openai".to_string());
-        let model_str = used_model.clone().or_else(|| model.clone()).unwrap_or_default();
+        let provider_str = route
+            .provider_name
+            .clone()
+            .unwrap_or_else(|| "openai".to_string());
+        let model_str = used_model
+            .clone()
+            .or_else(|| model.clone())
+            .unwrap_or_default();
         let request_id_tok = eg.request_id.clone();
         let api_key_hash_tok = api_key_hash.clone();
         let agent_id_tok = eg.agent_id.clone();
@@ -1644,7 +1795,11 @@ pub async fn run(
         let budget_cache = Arc::clone(&state.budget_cache);
         let cost_estimator = Arc::clone(&state.cost_estimator);
         let api_key_hash_budget = api_key_hash.clone();
-        let agent_id_budget = if agent_id_str.is_empty() { None } else { Some(agent_id_str.to_string()) };
+        let agent_id_budget = if agent_id_str.is_empty() {
+            None
+        } else {
+            Some(agent_id_str.to_string())
+        };
         let tenant_id_budget = tenant_id.clone();
 
         tokio::spawn(async move {
@@ -1676,13 +1831,16 @@ pub async fn run(
                     // Update budget cache for agent scope
                     let agent_id_str = agent_id_budget.as_deref().unwrap_or("anonymous");
                     budget_cache.record_spend("agent", agent_id_str, cost);
-                    if let Err(e) = token_provider.update_budget_spend("agent", agent_id_str, cost) {
+                    if let Err(e) = token_provider.update_budget_spend("agent", agent_id_str, cost)
+                    {
                         tracing::warn!(error = %e, "budget spend update (agent) failed");
                     }
                     // Update budget cache for tenant scope
                     if tenant_id_budget != "default" {
                         budget_cache.record_spend("tenant", &tenant_id_budget, cost);
-                        if let Err(e) = token_provider.update_budget_spend("tenant", &tenant_id_budget, cost) {
+                        if let Err(e) =
+                            token_provider.update_budget_spend("tenant", &tenant_id_budget, cost)
+                        {
                             tracing::warn!(error = %e, "budget spend update (tenant) failed");
                         }
                     }
@@ -1697,10 +1855,14 @@ pub async fn run(
     let final_action_str = final_action.action.to_string();
     let req_payload_ref = if should_retain_payload(&state.config.audit, &final_action_str) {
         retained_request_payload.as_deref()
-    } else { None };
+    } else {
+        None
+    };
     let resp_payload_ref = if should_retain_payload(&state.config.audit, &final_action_str) {
         retained_response_payload.as_deref()
-    } else { None };
+    } else {
+        None
+    };
     let entry = build_audit_entry(AuditParams {
         audit_id: &audit_id,
         request_id: &eg.request_id,
@@ -1719,7 +1881,12 @@ pub async fn run(
         matched_rules: &final_action.matched_rules,
         retries_made,
         fallback_triggered,
-        labels: &build_labels(detector_results, &pii_result.findings, &final_action_str, final_action.rule_id.as_deref()),
+        labels: &build_labels(
+            detector_results,
+            &pii_result.findings,
+            &final_action_str,
+            final_action.rule_id.as_deref(),
+        ),
         request_payload: req_payload_ref,
         response_payload: resp_payload_ref,
         tenant_id: &tenant_id,
@@ -1728,7 +1895,15 @@ pub async fn run(
         hold_id: None,
     });
     state.audit_sink.write(entry);
-    record_perf(state, &eg, model.as_deref(), route.provider_name.as_deref(), is_streaming, timing.upstream_ms, &timing);
+    record_perf(
+        state,
+        &eg,
+        model.as_deref(),
+        route.provider_name.as_deref(),
+        is_streaming,
+        timing.upstream_ms,
+        &timing,
+    );
 
     // ── Build response ────────────────────────────────────────────────────────
     let mut builder = axum::response::Response::builder().status(axum_status);
@@ -1737,10 +1912,14 @@ pub async fn run(
     }
     builder = builder.header("x-request-id", eg.request_id.as_str());
     builder = builder.header("eg-audit-id", audit_id.as_str());
-    if let Ok(hv) = request_policy_input.to_header_value(4096).parse::<axum::http::HeaderValue>() {
+    if let Ok(hv) = request_policy_input
+        .to_header_value(4096)
+        .parse::<axum::http::HeaderValue>()
+    {
         builder = builder.header("eg-policy-input", hv);
     }
-    builder.body(Body::from(resp_body_bytes))
+    builder
+        .body(Body::from(resp_body_bytes))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
@@ -1802,10 +1981,13 @@ fn build_streaming_audit_entry(
     // Merge request-time PII findings with streaming PII findings (those that were
     // redacted during stream — tool-policy violations have empty redacted_to and are
     // intentionally excluded from pii_findings; they live only in streaming.findings).
-    let streaming_pii: Vec<&PiiFinding> = stats.findings.iter()
+    let streaming_pii: Vec<&PiiFinding> = stats
+        .findings
+        .iter()
         .filter(|f| !f.redacted_to.is_empty())
         .collect();
-    let merged_pii: Vec<&PiiFinding> = pii_findings.iter()
+    let merged_pii: Vec<&PiiFinding> = pii_findings
+        .iter()
         .chain(streaming_pii.iter().copied())
         .collect();
     let has_pii = !merged_pii.is_empty();
@@ -1987,7 +2169,9 @@ fn record_perf(
     upstream_ms: f64,
     timing: &PhaseTiming,
 ) {
-    if !state.config.performance.enabled { return; }
+    if !state.config.performance.enabled {
+        return;
+    }
     let sample = PerformanceSample {
         timestamp: Utc::now().to_rfc3339(),
         agent_id: eg.agent_id.clone(),
@@ -2109,7 +2293,13 @@ fn check_rate_limits(
 
     for (scope, scope_id) in checks {
         match token_provider.check_and_increment(scope, &scope_id, "request", 1.0, now) {
-            Ok(RateLimitCheckResult::Exceeded { limit_type, window, limit_value, current, .. }) => {
+            Ok(RateLimitCheckResult::Exceeded {
+                limit_type,
+                window,
+                limit_value,
+                current,
+                ..
+            }) => {
                 let body = serde_json::json!({
                     "error": "rate_limit_exceeded",
                     "scope": scope,
@@ -2117,11 +2307,8 @@ fn check_rate_limits(
                     "limit": limit_value,
                     "current": current,
                 });
-                let resp = (
-                    axum::http::StatusCode::TOO_MANY_REQUESTS,
-                    axum::Json(body),
-                )
-                    .into_response();
+                let resp =
+                    (axum::http::StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
                 tracing::warn!(
                     scope = scope,
                     scope_id = %scope_id,
@@ -2151,7 +2338,9 @@ pub fn hash_api_key(key: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-pub fn map_to_header_map(map: &std::collections::HashMap<String, String>) -> reqwest::header::HeaderMap {
+pub fn map_to_header_map(
+    map: &std::collections::HashMap<String, String>,
+) -> reqwest::header::HeaderMap {
     let mut hm = reqwest::header::HeaderMap::new();
     for (k, v) in map {
         if let (Ok(name), Ok(val)) = (
@@ -2173,7 +2362,8 @@ pub fn map_to_header_map(map: &std::collections::HashMap<String, String>) -> req
 /// that is NOT captured here — Anthropic tool call tracking would need a
 /// dedicated extractor keyed on `type` rather than `delta.tool_calls`.
 fn extract_streaming_tool_calls(v: &Value, accumulated: &mut Vec<String>) {
-    let tool_calls = match v.get("choices")
+    let tool_calls = match v
+        .get("choices")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("delta"))
         .and_then(|d| d.get("tool_calls"))
@@ -2183,7 +2373,8 @@ fn extract_streaming_tool_calls(v: &Value, accumulated: &mut Vec<String>) {
         None => return,
     };
     for tc in tool_calls {
-        if let Some(name) = tc.get("function")
+        if let Some(name) = tc
+            .get("function")
             .and_then(|f| f.get("name"))
             .and_then(|n| n.as_str())
         {
@@ -2198,8 +2389,12 @@ fn extract_streaming_tool_calls(v: &Value, accumulated: &mut Vec<String>) {
 /// per tool-call index. OpenAI streams arguments as JSON fragments across
 /// multiple SSE events: `choices[0].delta.tool_calls[{index, function: {arguments: "..."}}]`.
 /// Each delta's `arguments` field is appended to the existing entry for that index.
-fn extract_streaming_tool_args(v: &Value, accumulated_args: &mut std::collections::HashMap<usize, String>) {
-    let tool_calls = match v.get("choices")
+fn extract_streaming_tool_args(
+    v: &Value,
+    accumulated_args: &mut std::collections::HashMap<usize, String>,
+) {
+    let tool_calls = match v
+        .get("choices")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("delta"))
         .and_then(|d| d.get("tool_calls"))
@@ -2209,10 +2404,9 @@ fn extract_streaming_tool_args(v: &Value, accumulated_args: &mut std::collection
         None => return,
     };
     for tc in tool_calls {
-        let index = tc.get("index")
-            .and_then(|i| i.as_u64())
-            .unwrap_or(0) as usize;
-        if let Some(args_fragment) = tc.get("function")
+        let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+        if let Some(args_fragment) = tc
+            .get("function")
             .and_then(|f| f.get("arguments"))
             .and_then(|a| a.as_str())
         {
@@ -2232,7 +2426,8 @@ fn extract_requested_tools(body: &Value) -> (Vec<String>, usize) {
         Some(arr) => arr,
         None => return (vec![], 0),
     };
-    let names: Vec<String> = tools.iter()
+    let names: Vec<String> = tools
+        .iter()
         .filter_map(|t| {
             t.get("function")
                 .and_then(|f| f.get("name"))
@@ -2262,7 +2457,9 @@ fn compute_business_hours_active(timezone_str: &str, window: Option<&str>) -> bo
     }
     let parse_hhmm = |s: &str| -> Option<(u32, u32)> {
         let hm: Vec<&str> = s.split(':').collect();
-        if hm.len() != 2 { return None; }
+        if hm.len() != 2 {
+            return None;
+        }
         Some((hm[0].parse().ok()?, hm[1].parse().ok()?))
     };
     let (start_h, start_m) = match parse_hhmm(parts[0]) {
@@ -2293,29 +2490,47 @@ fn build_cedar_context_compat(params: &ContextParams) -> Value {
     let mut ctx = build_context(params);
 
     if let Some(obj) = ctx.as_object_mut() {
-        obj.insert("agent_integrity".to_string(), json!({
-            "injection_detected": params.injection_detected,
-            "jailbreak_detected": params.jailbreak_detected,
-        }));
-        obj.insert("data_protection".to_string(), json!({
-            "pii_present": params.pii_detected,
-            "confidential_detected": params.confidential_detected,
-            "exfiltration_detected": params.exfiltration_detected,
-        }));
-        obj.insert("content_safety".to_string(), json!({
-            "threat_detected": params.threat_detected,
-            "bias_detected": params.bias_detected,
-        }));
-        obj.insert("identity_safety".to_string(), json!({
-            "disclosure_detected": params.identity_claim_detected,
-        }));
-        obj.insert("tool_governance".to_string(), json!({
-            "unauthorized_detected": params.unauthorized_tool_detected,
-        }));
-        obj.insert("supply_chain".to_string(), json!({
-            "mcp_server_approved": params.mcp_server_approved,
-            "mcp_server_id": params.mcp_server_id,
-        }));
+        obj.insert(
+            "agent_integrity".to_string(),
+            json!({
+                "injection_detected": params.injection_detected,
+                "jailbreak_detected": params.jailbreak_detected,
+            }),
+        );
+        obj.insert(
+            "data_protection".to_string(),
+            json!({
+                "pii_present": params.pii_detected,
+                "confidential_detected": params.confidential_detected,
+                "exfiltration_detected": params.exfiltration_detected,
+            }),
+        );
+        obj.insert(
+            "content_safety".to_string(),
+            json!({
+                "threat_detected": params.threat_detected,
+                "bias_detected": params.bias_detected,
+            }),
+        );
+        obj.insert(
+            "identity_safety".to_string(),
+            json!({
+                "disclosure_detected": params.identity_claim_detected,
+            }),
+        );
+        obj.insert(
+            "tool_governance".to_string(),
+            json!({
+                "unauthorized_detected": params.unauthorized_tool_detected,
+            }),
+        );
+        obj.insert(
+            "supply_chain".to_string(),
+            json!({
+                "mcp_server_approved": params.mcp_server_approved,
+                "mcp_server_id": params.mcp_server_id,
+            }),
+        );
     }
     ctx
 }
@@ -2328,7 +2543,9 @@ fn extract_user_text(body: &Value) -> String {
         for msg in messages {
             if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
                 if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-                    if !text.is_empty() { text.push(' '); }
+                    if !text.is_empty() {
+                        text.push(' ');
+                    }
                     text.push_str(content);
                 }
             }
@@ -2353,7 +2570,8 @@ fn extract_response_tool_calls(body_bytes: &[u8]) -> (Vec<String>, usize) {
         Ok(v) => v,
         Err(_) => return (vec![], 0),
     };
-    let tool_calls = match body.get("choices")
+    let tool_calls = match body
+        .get("choices")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("message"))
         .and_then(|m| m.get("tool_calls"))
@@ -2362,7 +2580,8 @@ fn extract_response_tool_calls(body_bytes: &[u8]) -> (Vec<String>, usize) {
         Some(arr) => arr,
         None => return (vec![], 0),
     };
-    let names: Vec<String> = tool_calls.iter()
+    let names: Vec<String> = tool_calls
+        .iter()
         .filter_map(|tc| {
             tc.get("function")
                 .and_then(|f| f.get("name"))
@@ -2441,17 +2660,44 @@ mod tests {
         let streaming = &entry["streaming"];
 
         // Required by streaming-decision.v1.json
-        assert!(!streaming["provider"].is_null(), "missing streaming.provider");
+        assert!(
+            !streaming["provider"].is_null(),
+            "missing streaming.provider"
+        );
         assert!(!streaming["action"].is_null(), "missing streaming.action");
-        assert!(!streaming["bytes_received"].is_null(), "missing streaming.bytes_received");
-        assert!(!streaming["bytes_emitted"].is_null(), "missing streaming.bytes_emitted");
-        assert!(!streaming["findings"].is_null(), "missing streaming.findings");
-        assert!(!streaming["invoked_tools"].is_null(), "missing streaming.invoked_tools");
+        assert!(
+            !streaming["bytes_received"].is_null(),
+            "missing streaming.bytes_received"
+        );
+        assert!(
+            !streaming["bytes_emitted"].is_null(),
+            "missing streaming.bytes_emitted"
+        );
+        assert!(
+            !streaming["findings"].is_null(),
+            "missing streaming.findings"
+        );
+        assert!(
+            !streaming["invoked_tools"].is_null(),
+            "missing streaming.invoked_tools"
+        );
         assert!(!streaming["latency"].is_null(), "missing streaming.latency");
-        assert!(!streaming["buffer_flushes"].is_null(), "missing streaming.buffer_flushes");
-        assert!(!streaming["frames_received"].is_null(), "missing streaming.frames_received");
-        assert!(!streaming["frames_emitted"].is_null(), "missing streaming.frames_emitted");
-        assert!(!streaming["streaming_scan"].is_null(), "missing streaming.streaming_scan");
+        assert!(
+            !streaming["buffer_flushes"].is_null(),
+            "missing streaming.buffer_flushes"
+        );
+        assert!(
+            !streaming["frames_received"].is_null(),
+            "missing streaming.frames_received"
+        );
+        assert!(
+            !streaming["frames_emitted"].is_null(),
+            "missing streaming.frames_emitted"
+        );
+        assert!(
+            !streaming["streaming_scan"].is_null(),
+            "missing streaming.streaming_scan"
+        );
     }
 
     #[test]
@@ -2486,7 +2732,10 @@ mod tests {
         let first_byte = entry["streaming"]["latency"]["first_byte_ms"]
             .as_f64()
             .expect("first_byte_ms should be a number");
-        assert!(first_byte >= 0.0, "first_byte_ms must be non-negative, got {first_byte}");
+        assert!(
+            first_byte >= 0.0,
+            "first_byte_ms must be non-negative, got {first_byte}"
+        );
     }
 
     #[test]
@@ -2497,7 +2746,10 @@ mod tests {
             .as_f64()
             .expect("cadabra_ms should be a number");
         // Must equal stats.cadabra_ms (enforcement overhead), not the overhead_ms arg (5.0)
-        assert_eq!(cadabra, 11.5, "cadabra_ms should be enforcement overhead sum, not total overhead");
+        assert_eq!(
+            cadabra, 11.5,
+            "cadabra_ms should be enforcement overhead sum, not total overhead"
+        );
     }
 
     #[test]
@@ -2693,9 +2945,13 @@ mod tests {
         let stats = make_stats(200, 200, 3, 3, 1, 0, 1, Some(10.0), 150.0, 2.0, "allow");
         let entry = call_build(&stats, true, "openai");
         let tools = &entry["streaming"]["invoked_tools"];
-        assert!(!tools.is_null(), "streaming.invoked_tools must be present even when empty");
+        assert!(
+            !tools.is_null(),
+            "streaming.invoked_tools must be present even when empty"
+        );
         assert_eq!(
-            tools.as_array().unwrap().len(), 0,
+            tools.as_array().unwrap().len(),
+            0,
             "streaming.invoked_tools must be an empty array when no tools were invoked"
         );
     }
@@ -2743,7 +2999,9 @@ mod tests {
         });
 
         let entry = call_build(&stats, true, "openai");
-        let findings = entry["streaming"]["findings"].as_array().expect("findings must be array");
+        let findings = entry["streaming"]["findings"]
+            .as_array()
+            .expect("findings must be array");
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0]["location"], "streaming_response_tool_calls");
         assert_eq!(
@@ -2815,19 +3073,27 @@ mod tests {
         );
 
         // Top-level pii_findings must contain the streaming finding
-        let pii_findings = entry["pii_findings"].as_array().expect("pii_findings must be array");
-        assert_eq!(pii_findings.len(), 1, "email finding from streaming_tool_args must appear in pii_findings");
+        let pii_findings = entry["pii_findings"]
+            .as_array()
+            .expect("pii_findings must be array");
+        assert_eq!(
+            pii_findings.len(),
+            1,
+            "email finding from streaming_tool_args must appear in pii_findings"
+        );
         assert_eq!(pii_findings[0]["location"], "streaming_tool_args");
         assert_eq!(pii_findings[0]["pattern"], "email");
 
         // context_snapshot.pii_detected must be patched to true
         assert_eq!(
-            entry["context_snapshot"]["pii_detected"], json!(true),
+            entry["context_snapshot"]["pii_detected"],
+            json!(true),
             "context_snapshot.pii_detected must be true when streaming PII found"
         );
         // data_protection.pii_present must also be updated
         assert_eq!(
-            entry["context_snapshot"]["data_protection"]["pii_present"], json!(true),
+            entry["context_snapshot"]["data_protection"]["pii_present"],
+            json!(true),
             "data_protection.pii_present must be true when streaming PII found"
         );
 
@@ -2847,12 +3113,27 @@ mod tests {
         let cache = SyncRequirementsCache::from_requirements(&reqs);
 
         // v2 observation mode: only exfiltration is enforced (block)
-        assert!(cache.sync_detectors.contains("exfiltration"), "exfiltration should be sync");
-        assert!(!cache.sync_detectors.contains("injection"), "injection should be async (flag only)");
-        assert!(!cache.sync_detectors.contains("jailbreak"), "jailbreak should be async (flag only)");
+        assert!(
+            cache.sync_detectors.contains("exfiltration"),
+            "exfiltration should be sync"
+        );
+        assert!(
+            !cache.sync_detectors.contains("injection"),
+            "injection should be async (flag only)"
+        );
+        assert!(
+            !cache.sync_detectors.contains("jailbreak"),
+            "jailbreak should be async (flag only)"
+        );
         assert!(!cache.pii_sync, "PII should be async in observation mode");
-        assert!(cache.has_response_enforcement, "response enforcement should be detected");
-        assert!(!cache.all_async, "not all async — exfiltration still enforced");
+        assert!(
+            cache.has_response_enforcement,
+            "response enforcement should be detected"
+        );
+        assert!(
+            !cache.all_async,
+            "not all async — exfiltration still enforced"
+        );
     }
 
     #[test]
@@ -2882,16 +3163,22 @@ mod tests {
     #[test]
     fn sync_cache_eviction_clears_tenant_entry() {
         let cache: dashmap::DashMap<String, SyncRequirementsCache> = dashmap::DashMap::new();
-        cache.insert("tenant-1".to_string(), SyncRequirementsCache {
-            sync_detectors: std::collections::HashSet::new(),
-            pii_sync: false,
-            has_response_enforcement: false,
-            all_async: true,
-        });
+        cache.insert(
+            "tenant-1".to_string(),
+            SyncRequirementsCache {
+                sync_detectors: std::collections::HashSet::new(),
+                pii_sync: false,
+                has_response_enforcement: false,
+                all_async: true,
+            },
+        );
         assert!(cache.contains_key("tenant-1"));
 
         cache.remove("tenant-1");
-        assert!(!cache.contains_key("tenant-1"), "eviction should clear the entry");
+        assert!(
+            !cache.contains_key("tenant-1"),
+            "eviction should clear the entry"
+        );
     }
 
     #[test]
@@ -2906,7 +3193,10 @@ mod tests {
             when { context.injection_detected == true };
         "#;
         let reqs1 = SyncRequirements::analyze(flag_policy);
-        cache.insert("t1".to_string(), SyncRequirementsCache::from_requirements(&reqs1));
+        cache.insert(
+            "t1".to_string(),
+            SyncRequirementsCache::from_requirements(&reqs1),
+        );
         assert!(cache.get("t1").unwrap().all_async);
 
         // Evict (simulates policy reload)
@@ -2919,9 +3209,15 @@ mod tests {
             when { context.injection_detected == true };
         "#;
         let reqs2 = SyncRequirements::analyze(block_policy);
-        cache.insert("t1".to_string(), SyncRequirementsCache::from_requirements(&reqs2));
+        cache.insert(
+            "t1".to_string(),
+            SyncRequirementsCache::from_requirements(&reqs2),
+        );
         let entry = cache.get("t1").unwrap();
-        assert!(!entry.all_async, "after reload with block policy, should not be all_async");
+        assert!(
+            !entry.all_async,
+            "after reload with block policy, should not be all_async"
+        );
         assert!(entry.sync_detectors.contains("injection"));
     }
 
@@ -2950,8 +3246,10 @@ mod tests {
         } else {
             original_body.clone()
         };
-        assert_eq!(enforced_body, original_body,
-            "flag decision should preserve original body for prompt caching");
+        assert_eq!(
+            enforced_body, original_body,
+            "flag decision should preserve original body for prompt caching"
+        );
 
         // Allow decision → same behavior
         let allow_decision = PolicyDecision::allow();
@@ -2960,8 +3258,10 @@ mod tests {
         } else {
             original_body.clone()
         };
-        assert_eq!(enforced_body, original_body,
-            "allow decision should preserve original body");
+        assert_eq!(
+            enforced_body, original_body,
+            "allow decision should preserve original body"
+        );
 
         // Transform decision → body modification required
         let transform_decision = PolicyDecision {
@@ -2978,8 +3278,10 @@ mod tests {
         } else {
             original_body.clone()
         };
-        assert_eq!(enforced_body, redacted_body,
-            "transform decision should apply PII redaction");
+        assert_eq!(
+            enforced_body, redacted_body,
+            "transform decision should apply PII redaction"
+        );
 
         // Block decision → body modification required (though request won't proceed)
         let block_decision = PolicyDecision {
@@ -2991,8 +3293,10 @@ mod tests {
             regulatory_mapping: vec![],
             matched_rules: vec![],
         };
-        assert!(block_decision.action.requires_body_modification(),
-            "block decision should require body modification");
+        assert!(
+            block_decision.action.requires_body_modification(),
+            "block decision should require body modification"
+        );
     }
 
     #[test]
@@ -3004,7 +3308,9 @@ mod tests {
         assert!(EnforcementAction::Block.requires_body_modification());
     }
 
-    fn test_context_params(overrides: impl FnOnce(&mut ContextParams<'_>)) -> ContextParams<'static> {
+    fn test_context_params(
+        overrides: impl FnOnce(&mut ContextParams<'_>),
+    ) -> ContextParams<'static> {
         let mut params = ContextParams {
             model: "test-model",
             risk_level: "low",
@@ -3178,7 +3484,11 @@ mod tests {
         extract_streaming_tool_args(&d3, &mut args);
         extract_streaming_tool_args(&d4, &mut args);
 
-        assert_eq!(args.len(), 2, "should have two independent tool call indices");
+        assert_eq!(
+            args.len(),
+            2,
+            "should have two independent tool call indices"
+        );
         assert_eq!(args.get(&0).unwrap(), "{\"city\": \"SF\"}");
         assert_eq!(args.get(&1).unwrap(), "{\"to\": \"bob@example.com\"}");
     }
@@ -3197,7 +3507,11 @@ mod tests {
         assert!(
             result.findings.iter().any(|f| f.pattern.contains("email")),
             "at least one finding should be an email pattern; findings: {:?}",
-            result.findings.iter().map(|f| &f.pattern).collect::<Vec<_>>()
+            result
+                .findings
+                .iter()
+                .map(|f| &f.pattern)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3226,10 +3540,22 @@ mod tests {
         );
         // Verify at least the email was caught
         let has_email = result.findings.iter().any(|f| f.pattern.contains("email"));
-        assert!(has_email, "email in tool message content should be detected");
+        assert!(
+            has_email,
+            "email in tool message content should be detected"
+        );
         // The SSN should also be caught
-        let has_ssn = result.findings.iter().any(|f| f.pattern.contains("ssn") || f.pattern.contains("SSN") || f.pattern.contains("social"));
-        assert!(has_ssn, "SSN in tool message content should be detected; patterns: {:?}",
-            result.findings.iter().map(|f| &f.pattern).collect::<Vec<_>>());
+        let has_ssn = result.findings.iter().any(|f| {
+            f.pattern.contains("ssn") || f.pattern.contains("SSN") || f.pattern.contains("social")
+        });
+        assert!(
+            has_ssn,
+            "SSN in tool message content should be detected; patterns: {:?}",
+            result
+                .findings
+                .iter()
+                .map(|f| &f.pattern)
+                .collect::<Vec<_>>()
+        );
     }
 }
