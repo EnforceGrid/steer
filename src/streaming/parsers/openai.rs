@@ -68,6 +68,13 @@ impl StreamParser for OpenAiParser {
         });
         Bytes::from(format!("data: {}\n\ndata: [DONE]\n\n", payload))
     }
+
+    fn encode_text_delta(&self, text: &str) -> Bytes {
+        let payload = json!({
+            "choices": [{"delta": {"content": text}, "finish_reason": null, "index": 0}]
+        });
+        Bytes::from(format!("data: {}\n\n", payload))
+    }
 }
 
 #[cfg(test)]
@@ -350,6 +357,70 @@ mod tests {
             "tool_calls",
             "finish_reason must survive encode_frame round-trip"
         );
+    }
+
+    // ─── encode_text_delta tests ─────────────────────────────────────────────
+
+    #[test]
+    fn encode_text_delta_produces_valid_sse_frame() {
+        let encoded = parser().encode_text_delta("hello world");
+        let text = std::str::from_utf8(&encoded).unwrap();
+        assert!(text.starts_with("data: "), "must start with SSE data prefix");
+        assert!(text.ends_with("\n\n"), "must end with SSE event terminator");
+    }
+
+    #[test]
+    fn encode_text_delta_content_round_trips() {
+        let encoded = parser().encode_text_delta("hello world");
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        assert!(!frames[0].is_done);
+        assert!(!frames[0].is_error);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        let text = v["choices"][0]["delta"]["content"].as_str().unwrap();
+        assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn encode_text_delta_empty_string() {
+        let encoded = parser().encode_text_delta("");
+        let text = std::str::from_utf8(&encoded).unwrap();
+        assert!(text.ends_with("\n\n"), "empty delta must still be valid SSE");
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+    }
+
+    #[test]
+    fn encode_text_delta_pii_redacted_text_round_trips() {
+        let redacted = "contact [REDACTED_EMAIL] for help";
+        let encoded = parser().encode_text_delta(redacted);
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        let text = v["choices"][0]["delta"]["content"].as_str().unwrap();
+        assert_eq!(text, redacted);
+    }
+
+    #[test]
+    fn encode_text_delta_finish_reason_is_null() {
+        let encoded = parser().encode_text_delta("some text");
+        let frames = parser().parse_frame(&encoded);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        assert!(
+            v["choices"][0]["finish_reason"].is_null(),
+            "encode_text_delta must produce null finish_reason, got: {:?}", v
+        );
+    }
+
+    #[test]
+    fn encode_text_delta_special_chars_json_escaped() {
+        let text = r#"say "hello" \ world"#;
+        let encoded = parser().encode_text_delta(text);
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        let recovered = v["choices"][0]["delta"]["content"].as_str().unwrap();
+        assert_eq!(recovered, text);
     }
 
     #[test]

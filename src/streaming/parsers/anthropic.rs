@@ -71,6 +71,15 @@ impl StreamParser for AnthropicParser {
             delta, stop
         ))
     }
+
+    fn encode_text_delta(&self, text: &str) -> Bytes {
+        let payload = json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text}
+        });
+        Bytes::from(format!("event: content_block_delta\ndata: {}\n\n", payload))
+    }
 }
 
 #[cfg(test)]
@@ -237,6 +246,59 @@ mod tests {
         assert_eq!(content_block["id"].as_str().unwrap(), "toolu_ABC");
         assert_eq!(content_block["name"].as_str().unwrap(), "my_tool");
         assert_eq!(content_block["type"].as_str().unwrap(), "tool_use");
+    }
+
+    // ─── encode_text_delta tests ─────────────────────────────────────────────
+
+    #[test]
+    fn encode_text_delta_produces_valid_sse_frame() {
+        let encoded = parser().encode_text_delta("hello world");
+        let text = std::str::from_utf8(&encoded).unwrap();
+        assert!(text.ends_with("\n\n"), "must end with SSE event terminator");
+        assert!(text.contains("data: "), "must contain SSE data line");
+        assert!(text.contains("event: content_block_delta"), "must include event type line");
+    }
+
+    #[test]
+    fn encode_text_delta_content_round_trips() {
+        let encoded = parser().encode_text_delta("hello world");
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event.as_deref(), Some("content_block_delta"));
+        assert!(!frames[0].is_done);
+        assert!(!frames[0].is_error);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        let text = v["delta"]["text"].as_str().unwrap();
+        assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn encode_text_delta_type_is_text_delta() {
+        let encoded = parser().encode_text_delta("test");
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        assert_eq!(v["type"].as_str().unwrap(), "content_block_delta");
+        assert_eq!(v["delta"]["type"].as_str().unwrap(), "text_delta");
+    }
+
+    #[test]
+    fn encode_text_delta_pii_redacted_text_round_trips() {
+        let redacted = "call [REDACTED_PHONE] now";
+        let encoded = parser().encode_text_delta(redacted);
+        let frames = parser().parse_frame(&encoded);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        assert_eq!(v["delta"]["text"].as_str().unwrap(), redacted);
+    }
+
+    #[test]
+    fn encode_text_delta_special_chars_json_escaped() {
+        let text = r#"say "hello" \ world"#;
+        let encoded = parser().encode_text_delta(text);
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        assert_eq!(v["delta"]["text"].as_str().unwrap(), text);
     }
 
     #[test]

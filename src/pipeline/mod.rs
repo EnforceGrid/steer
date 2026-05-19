@@ -854,7 +854,8 @@ pub async fn run(
         .get("content-type")
         .cloned()
         .unwrap_or_default();
-    let is_sse = content_type.contains("text/event-stream");
+    let is_sse = content_type.contains("text/event-stream")
+        || content_type.contains("application/vnd.amazon.eventstream");
 
     let axum_status =
         StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -961,7 +962,11 @@ pub async fn run(
         let audit_writer_sse: Arc<dyn AuditSink> = Arc::clone(&state.audit_sink);
         let buffer_size = state.config.streaming.buffer_size_bytes;
         let streaming_enabled = state.config.streaming.enabled;
-        let provider = crate::streaming::parsers::detect_provider(uri.path(), None);
+        let provider = crate::streaming::parsers::detect_provider(
+            route.provider_name.as_deref(),
+            uri.path(),
+            None,
+        );
         let provider_sse_post = provider.to_string();
         // T-006: snapshot principal for mid-stream policy evaluation
         let principal_sse = eg.agent_id.clone();
@@ -1057,7 +1062,11 @@ pub async fn run(
                             // Emit original SSE frames byte-faithful so downstream clients
                             // see a valid wire format regardless of which policies fired.
                             sse_buf.extend_from_slice(&chunk);
-                            let complete_events = crate::streaming::parsers::extract_complete_sse_events(&mut sse_buf);
+                            let complete_events = if parser.is_binary() {
+                                crate::streaming::parsers::extract_complete_bedrock_frames(&mut sse_buf)
+                            } else {
+                                crate::streaming::parsers::extract_complete_sse_events(&mut sse_buf)
+                            };
                             if complete_events.is_empty() {
                                 continue; // No complete event yet
                             }
@@ -1066,10 +1075,14 @@ pub async fn run(
                                 .collect();
                             frames_received += obs_frames.len();
                             for frame in &obs_frames {
+                                // Extract tool calls unconditionally — Gemini sends functionCall +
+                                // finishReason:STOP in the same terminal frame (LiteLLM #12240/#21041).
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&frame.data) {
+                                    extract_streaming_tool_calls(&v, provider, &mut streaming_tool_names);
+                                    extract_streaming_tool_args(&v, provider, &mut streaming_tool_args);
+                                }
                                 if !frame.is_done && !frame.is_error {
                                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&frame.data) {
-                                        extract_streaming_tool_calls(&v, &mut streaming_tool_names);
-                                        extract_streaming_tool_args(&v, &mut streaming_tool_args);
                                         if let Some(text) = extract_delta_text(&v) {
                                             let enforce_t = Instant::now();
                                             let (_, new_findings) = pii_engine_sse.scan_bytes(text.as_bytes(), "streaming_response");
@@ -1163,10 +1176,14 @@ pub async fn run(
                             continue;
                         }
 
-                        // Parse SSE frames from this chunk and enforce.
-                        // SSE line-buffering: same accumulation as observe-mode above.
+                        // Parse frames from this chunk and enforce.
+                        // Bedrock uses binary frame splitting; other providers use SSE \n\n splitting.
                         sse_buf.extend_from_slice(&chunk);
-                        let complete_events = crate::streaming::parsers::extract_complete_sse_events(&mut sse_buf);
+                        let complete_events = if parser.is_binary() {
+                            crate::streaming::parsers::extract_complete_bedrock_frames(&mut sse_buf)
+                        } else {
+                            crate::streaming::parsers::extract_complete_sse_events(&mut sse_buf)
+                        };
                         if complete_events.is_empty() {
                             continue; // No complete event yet
                         }
@@ -1187,6 +1204,14 @@ pub async fn run(
                         // the SSE envelope (data: ...\n\n) for text parsers, and is a no-op
                         // clone for binary passthrough parsers.
                         for frame in frames {
+                            // Extract tool calls unconditionally — Gemini sends functionCall +
+                            // finishReason:STOP in the same terminal frame (LiteLLM #12240/#21041),
+                            // so extraction must happen before the is_done gate.
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&frame.data) {
+                                extract_streaming_tool_calls(&v, provider, &mut streaming_tool_names);
+                                extract_streaming_tool_args(&v, provider, &mut streaming_tool_args);
+                            }
+
                             if frame.is_done || frame.is_error {
                                 // Flush remaining buffered content before the control frame
                                 if let Some(remaining) = buffer.flush_end() {
@@ -1194,9 +1219,11 @@ pub async fn run(
                                     let (scanned, new_findings) = pii_engine_sse.scan_bytes(&remaining, "streaming_response");
                                     cadabra_ms += enforce_t.elapsed().as_secs_f64() * 1000.0;
                                     findings.extend(new_findings);
-                                    bytes_emitted += scanned.len();
+                                    let scanned_str = String::from_utf8_lossy(&scanned);
+                                    let encoded = parser.encode_text_delta(&scanned_str);
+                                    bytes_emitted += encoded.len();
                                     frames_emitted += 1;
-                                    yield Ok(bytes::Bytes::from(scanned));
+                                    yield Ok(encoded);
                                 }
                                 // Scan accumulated tool call arguments for PII at stream end
                                 if !streaming_tool_args.is_empty() {
@@ -1279,11 +1306,9 @@ pub async fn run(
                                 frames_emitted += 1;
                                 yield Ok(encoded);
                             } else {
-                                // Extract text delta and buffer it for PII scanning
+                                // Extract text delta and buffer it for PII scanning.
+                                // Tool calls were already extracted unconditionally above.
                                 let text_opt = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&frame.data) {
-                                    // T-903: Extract tool call names from streaming deltas
-                                    extract_streaming_tool_calls(&v, &mut streaming_tool_names);
-                                    extract_streaming_tool_args(&v, &mut streaming_tool_args);
                                     extract_delta_text(&v)
                                 } else {
                                     None
@@ -1331,9 +1356,11 @@ pub async fn run(
                                         // T-007: Apply 5-action verdict
                                         match resp_decision.action {
                                             EnforcementAction::Allow => {
-                                                bytes_emitted += scanned.len();
+                                                let scanned_str = String::from_utf8_lossy(&scanned);
+                                                let encoded = parser.encode_text_delta(&scanned_str);
+                                                bytes_emitted += encoded.len();
                                                 frames_emitted += 1;
-                                                yield Ok(bytes::Bytes::from(scanned));
+                                                yield Ok(encoded);
                                             }
                                             EnforcementAction::Flag => {
                                                 // Emit content unchanged; add a policy-flag finding
@@ -1347,28 +1374,30 @@ pub async fn run(
                                                     location: "streaming_response_policy".to_string(),
                                                     matched_text: None,
                                                 });
-                                                bytes_emitted += scanned.len();
+                                                let scanned_str = String::from_utf8_lossy(&scanned);
+                                                let encoded = parser.encode_text_delta(&scanned_str);
+                                                bytes_emitted += encoded.len();
                                                 frames_emitted += 1;
-                                                yield Ok(bytes::Bytes::from(scanned));
+                                                yield Ok(encoded);
                                             }
                                             EnforcementAction::Transform => {
                                                 stream_verdict = "transform".to_string();
-                                                let output = if let Some(ref transform_meta) = resp_decision.transform_to {
+                                                let output_text = if let Some(ref transform_meta) = resp_decision.transform_to {
                                                     // transform_to format: "pattern\x1freplace"
                                                     let parts: Vec<&str> = transform_meta.splitn(2, '\x1f').collect();
                                                     if parts.len() == 2 {
                                                         let text_str = String::from_utf8_lossy(&scanned);
-                                                        let transformed = text_str.replace(parts[0], parts[1]);
-                                                        transformed.into_bytes()
+                                                        text_str.replace(parts[0], parts[1])
                                                     } else {
-                                                        scanned
+                                                        String::from_utf8_lossy(&scanned).into_owned()
                                                     }
                                                 } else {
-                                                    scanned
+                                                    String::from_utf8_lossy(&scanned).into_owned()
                                                 };
-                                                bytes_emitted += output.len();
+                                                let encoded = parser.encode_text_delta(&output_text);
+                                                bytes_emitted += encoded.len();
                                                 frames_emitted += 1;
-                                                yield Ok(bytes::Bytes::from(output));
+                                                yield Ok(encoded);
                                             }
                                             EnforcementAction::Steer => {
                                                 stream_verdict = "steer".to_string();
@@ -1435,8 +1464,12 @@ pub async fn run(
             // emitting a trailing \n\n — e.g. finish_reason: "tool_calls" arriving
             // in the last TCP segment without proper SSE termination.
             {
-                // First pass: extract any complete \n\n-terminated events.
-                let tail_events = crate::streaming::parsers::extract_complete_sse_events(&mut sse_buf);
+                // First pass: extract any complete frames (binary or SSE) from the residual buffer.
+                let tail_events = if parser.is_binary() {
+                    crate::streaming::parsers::extract_complete_bedrock_frames(&mut sse_buf)
+                } else {
+                    crate::streaming::parsers::extract_complete_sse_events(&mut sse_buf)
+                };
                 for ev in tail_events {
                     let tail_frames: Vec<_> = parser.parse_frame(&ev).into_iter().collect();
                     frames_received += tail_frames.len();
@@ -1491,9 +1524,11 @@ pub async fn run(
                 let (scanned, new_findings) = pii_engine_sse.scan_bytes(&remaining, "streaming_response");
                 cadabra_ms += enforce_t.elapsed().as_secs_f64() * 1000.0;
                 findings.extend(new_findings);
-                bytes_emitted += scanned.len();
+                let scanned_str = String::from_utf8_lossy(&scanned);
+                let encoded = parser.encode_text_delta(&scanned_str);
+                bytes_emitted += encoded.len();
                 frames_emitted += 1;
-                yield Ok(bytes::Bytes::from(scanned));
+                yield Ok(encoded);
             }
 
             // Send stats back for the audit entry
@@ -1779,10 +1814,11 @@ pub async fn run(
     // Parse token usage from the response body and record asynchronously.
     {
         let body_for_tokens = resp_body_bytes.clone();
-        let provider_str = route
-            .provider_name
-            .clone()
-            .unwrap_or_else(|| "openai".to_string());
+        let provider_str = crate::streaming::parsers::detect_provider(
+            route.provider_name.as_deref(),
+            uri.path(),
+            None,
+        ).to_string();
         let model_str = used_model
             .clone()
             .or_else(|| model.clone())
@@ -1934,25 +1970,50 @@ pub async fn run(
 ///   - Finish-reason-only frames (`delta: {}`, `finish_reason: "tool_calls"`)
 ///   - Metadata frames (message_start, content_block_start/stop, ping)
 ///   - Deprecated `function_call` format
-///   - Gemini candidates (TODO v1.1: `candidates[0].content.parts[0].text`)
-///   - Bedrock binary frames (TODO v1.1)
+///   - Gemini candidates (handled: `candidates[0].content.parts[*].text`)
+///   - Bedrock binary frames (handled: same delta.text path as Anthropic)
 ///
 /// Frames returning `None` are emitted verbatim by the enforce path's else clause.
 fn extract_delta_text(v: &serde_json::Value) -> Option<String> {
-    // OpenAI: choices[0].delta.content
-    v.get("choices")
+    // OpenAI/Azure: choices[0].delta.content
+    if let Some(text) = v.get("choices")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("delta"))
         .and_then(|d| d.get("content"))
         .and_then(|c| c.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            // Anthropic: delta.text
-            v.get("delta")
-                .and_then(|d| d.get("text"))
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string())
-        })
+    {
+        return Some(text.to_string());
+    }
+    // Anthropic/Bedrock: delta.type == "text_delta", delta.text
+    if let Some(text) = v.get("delta")
+        .and_then(|d| d.get("text"))
+        .and_then(|t| t.as_str())
+    {
+        return Some(text.to_string());
+    }
+    // Anthropic/Bedrock extended thinking: delta.type == "thinking_delta", delta.thinking
+    // Claude 3.7+ thinking blocks can contain PII (model reasons through tool args verbatim)
+    if let Some(text) = v.get("delta")
+        .and_then(|d| d.get("thinking"))
+        .and_then(|t| t.as_str())
+    {
+        return Some(text.to_string());
+    }
+    // Gemini: candidates[0].content.parts[*].text (concatenate all text parts)
+    if let Some(parts) = v.get("candidates")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.get("parts"))
+        .and_then(|p| p.as_array())
+    {
+        let text: String = parts.iter()
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            .collect();
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2353,33 +2414,68 @@ pub fn map_to_header_map(
     hm
 }
 
-/// T-903: Extract tool call names from a streaming delta chunk.
-/// OpenAI streaming format: `choices[0].delta.tool_calls[{index, function: {name, ...}}]`
-/// The `name` field only appears in the first delta for each tool call index.
+/// T-903: Extract tool call names from a streaming delta chunk for any provider.
 ///
-/// Audit note: this only covers OpenAI-format tool calls. Anthropic uses a
-/// separate event structure (`content_block_start` with `type: "tool_use"`)
-/// that is NOT captured here — Anthropic tool call tracking would need a
-/// dedicated extractor keyed on `type` rather than `delta.tool_calls`.
-fn extract_streaming_tool_calls(v: &Value, accumulated: &mut Vec<String>) {
-    let tool_calls = match v
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("delta"))
-        .and_then(|d| d.get("tool_calls"))
-        .and_then(|tc| tc.as_array())
-    {
-        Some(arr) => arr,
-        None => return,
-    };
-    for tc in tool_calls {
-        if let Some(name) = tc
-            .get("function")
-            .and_then(|f| f.get("name"))
-            .and_then(|n| n.as_str())
-        {
-            if !name.is_empty() && !accumulated.contains(&name.to_string()) {
-                accumulated.push(name.to_string());
+/// - OpenAI/Azure: `choices[0].delta.tool_calls[*].function.name`
+/// - Anthropic/Bedrock: `content_block_start` event with `content_block.type == "tool_use"`
+/// - Gemini: `candidates[0].content.parts[*].functionCall.name`
+///   (do NOT rely on `finishReason == "tool_calls"` — Gemini reports "STOP" even for tool calls)
+fn extract_streaming_tool_calls(v: &Value, provider: &str, accumulated: &mut Vec<String>) {
+    match provider {
+        "anthropic" | "bedrock" => {
+            // Anthropic streaming: content_block_start event carries the tool name
+            if v.get("type").and_then(|t| t.as_str()) == Some("content_block_start") {
+                if let Some(name) = v.get("content_block")
+                    .filter(|cb| cb.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                    .and_then(|cb| cb.get("name"))
+                    .and_then(|n| n.as_str())
+                {
+                    if !name.is_empty() && !accumulated.contains(&name.to_string()) {
+                        accumulated.push(name.to_string());
+                    }
+                }
+            }
+        }
+        "gemini" => {
+            // Gemini: functionCall parts — finishReason is "STOP" even for tool calls, do not use it
+            if let Some(parts) = v.get("candidates")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("content"))
+                .and_then(|c| c.get("parts"))
+                .and_then(|p| p.as_array())
+            {
+                for part in parts {
+                    if let Some(name) = part.get("functionCall")
+                        .and_then(|fc| fc.get("name"))
+                        .and_then(|n| n.as_str())
+                    {
+                        if !name.is_empty() && !accumulated.contains(&name.to_string()) {
+                            accumulated.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            // OpenAI/Azure: name only appears in the first delta per tool call index
+            let tool_calls = match v.get("choices")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("delta"))
+                .and_then(|d| d.get("tool_calls"))
+                .and_then(|tc| tc.as_array())
+            {
+                Some(arr) => arr,
+                None => return,
+            };
+            for tc in tool_calls {
+                if let Some(name) = tc.get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                {
+                    if !name.is_empty() && !accumulated.contains(&name.to_string()) {
+                        accumulated.push(name.to_string());
+                    }
+                }
             }
         }
     }
@@ -2391,8 +2487,28 @@ fn extract_streaming_tool_calls(v: &Value, accumulated: &mut Vec<String>) {
 /// Each delta's `arguments` field is appended to the existing entry for that index.
 fn extract_streaming_tool_args(
     v: &Value,
+    provider: &str,
     accumulated_args: &mut std::collections::HashMap<usize, String>,
 ) {
+    // Anthropic/Bedrock: arguments arrive as input_json_delta events
+    if matches!(provider, "anthropic" | "bedrock") {
+        if v.get("type").and_then(|t| t.as_str()) == Some("content_block_delta") {
+            if let Some(partial) = v.get("delta")
+                .filter(|d| d.get("type").and_then(|t| t.as_str()) == Some("input_json_delta"))
+                .and_then(|d| d.get("partial_json"))
+                .and_then(|j| j.as_str())
+            {
+                let index = v.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                accumulated_args.entry(index).or_default().push_str(partial);
+            }
+        }
+        return;
+    }
+    // Gemini: args are delivered in one shot in the functionCall object — no streaming fragments
+    if provider == "gemini" {
+        return;
+    }
+    // OpenAI/Azure
     let tool_calls = match v
         .get("choices")
         .and_then(|c| c.get(0))
@@ -2562,14 +2678,58 @@ fn extract_user_text(body: &Value) -> String {
     text
 }
 
-/// T-901: Extract tool call names from a non-streaming OpenAI response.
-/// Parses `choices[0].message.tool_calls[].function.name`.
-/// Returns (Vec<tool_name_strings>, count).
+/// T-901: Extract tool call names from a non-streaming response — any provider.
+///
+/// - Anthropic/Bedrock: `content[*].type == "tool_use"` → `content[*].name`
+/// - Gemini: `candidates[0].content.parts[*].functionCall.name`
+/// - OpenAI/Azure: `choices[0].message.tool_calls[*].function.name`
+///
+/// Auto-detects format from response schema; no explicit provider param needed.
 fn extract_response_tool_calls(body_bytes: &[u8]) -> (Vec<String>, usize) {
     let body: Value = match serde_json::from_slice(body_bytes) {
         Ok(v) => v,
         Err(_) => return (vec![], 0),
     };
+
+    // Anthropic/Bedrock: content[] array with type == "tool_use"
+    if let Some(content) = body.get("content").and_then(|c| c.as_array()) {
+        let names: Vec<String> = content.iter()
+            .filter_map(|item| {
+                if item.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    item.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !names.is_empty() {
+            let count = names.len();
+            return (names, count);
+        }
+    }
+
+    // Gemini: candidates[0].content.parts[*].functionCall
+    if let Some(parts) = body.get("candidates")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.get("parts"))
+        .and_then(|p| p.as_array())
+    {
+        let names: Vec<String> = parts.iter()
+            .filter_map(|part| {
+                part.get("functionCall")
+                    .and_then(|fc| fc.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+        if !names.is_empty() {
+            let count = names.len();
+            return (names, count);
+        }
+    }
+
+    // OpenAI/Azure: choices[0].message.tool_calls[*].function.name
     let tool_calls = match body
         .get("choices")
         .and_then(|c| c.get(0))
@@ -2883,7 +3043,7 @@ mod tests {
             }]
         });
         let mut names = vec![];
-        extract_streaming_tool_calls(&delta, &mut names);
+        extract_streaming_tool_calls(&delta, "openai", &mut names);
         assert_eq!(names, vec!["get_weather"]);
     }
 
@@ -2898,8 +3058,8 @@ mod tests {
             "choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{\"city\":"}}]}}]
         });
         let mut names = vec![];
-        extract_streaming_tool_calls(&delta1, &mut names);
-        extract_streaming_tool_calls(&delta2, &mut names);
+        extract_streaming_tool_calls(&delta1, "openai", &mut names);
+        extract_streaming_tool_calls(&delta2, "openai", &mut names);
         assert_eq!(names, vec!["get_weather"]); // no duplicate
     }
 
@@ -2912,8 +3072,8 @@ mod tests {
             "choices": [{"delta": {"tool_calls": [{"index": 1, "function": {"name": "send_email"}}]}}]
         });
         let mut names = vec![];
-        extract_streaming_tool_calls(&delta1, &mut names);
-        extract_streaming_tool_calls(&delta2, &mut names);
+        extract_streaming_tool_calls(&delta1, "openai", &mut names);
+        extract_streaming_tool_calls(&delta2, "openai", &mut names);
         assert_eq!(names, vec!["get_weather", "send_email"]);
     }
 
@@ -2921,8 +3081,115 @@ mod tests {
     fn extract_streaming_tool_calls_no_tool_calls_in_delta() {
         let delta = json!({"choices": [{"delta": {"content": "Hello"}}]});
         let mut names = vec![];
-        extract_streaming_tool_calls(&delta, &mut names);
+        extract_streaming_tool_calls(&delta, "openai", &mut names);
         assert!(names.is_empty());
+    }
+
+    #[test]
+    fn extract_delta_text_bedrock_thinking_delta() {
+        let v = serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "The user's SSN is 123-45-6789"}
+        });
+        assert_eq!(
+            extract_delta_text(&v),
+            Some("The user's SSN is 123-45-6789".to_string()),
+            "thinking_delta text must be extracted for PII scanning"
+        );
+    }
+
+    #[test]
+    fn extract_delta_text_text_delta_still_extracted() {
+        let v = serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "hello"}
+        });
+        assert_eq!(extract_delta_text(&v), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn extract_delta_text_signature_delta_returns_none() {
+        let v = serde_json::json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "signature_delta", "signature": "base64encodedXYZ=="}
+        });
+        assert_eq!(extract_delta_text(&v), None, "signature_delta must not be extracted");
+    }
+
+    #[test]
+    fn extract_streaming_tool_calls_anthropic_content_block_start() {
+        let delta = json!({
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": { "type": "tool_use", "id": "toolu_ABC", "name": "my_tool", "input": {} }
+        });
+        let mut names = vec![];
+        extract_streaming_tool_calls(&delta, "anthropic", &mut names);
+        assert_eq!(names, vec!["my_tool"]);
+    }
+
+    #[test]
+    fn extract_streaming_tool_calls_bedrock_tool_use() {
+        let delta = json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": { "type": "tool_use", "id": "toolu_XYZ", "name": "list_s3_buckets", "input": {} }
+        });
+        let mut names = vec![];
+        extract_streaming_tool_calls(&delta, "bedrock", &mut names);
+        assert_eq!(names, vec!["list_s3_buckets"]);
+    }
+
+    #[test]
+    fn extract_streaming_tool_calls_gemini_function_call() {
+        let delta = json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": { "name": "get_weather", "args": { "location": "Paris" } }
+                    }]
+                }
+            }]
+        });
+        let mut names = vec![];
+        extract_streaming_tool_calls(&delta, "gemini", &mut names);
+        assert_eq!(names, vec!["get_weather"]);
+    }
+
+    #[test]
+    fn extract_response_tool_calls_anthropic_content_array() {
+        let body = json!({
+            "id": "msg_abc",
+            "type": "message",
+            "content": [
+                { "type": "text", "text": "I'll call the tool." },
+                { "type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": { "city": "SF" } }
+            ]
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let (names, count) = extract_response_tool_calls(&bytes);
+        assert_eq!(count, 1);
+        assert_eq!(names, vec!["get_weather"]);
+    }
+
+    #[test]
+    fn extract_response_tool_calls_gemini_function_call() {
+        let body = json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": { "name": "get_weather", "args": { "location": "Paris" } }
+                    }]
+                }
+            }]
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let (names, count) = extract_response_tool_calls(&bytes);
+        assert_eq!(count, 1);
+        assert_eq!(names, vec!["get_weather"]);
     }
 
     // ── invoked_tools audit coverage ──────────────────────────────────────
@@ -2967,8 +3234,8 @@ mod tests {
             "choices": [{"delta": {"tool_calls": [{"index": 1, "function": {"name": "delete_record_simulated", "arguments": ""}}]}}]
         });
         let mut accumulated = vec![];
-        extract_streaming_tool_calls(&frame1, &mut accumulated);
-        extract_streaming_tool_calls(&frame2, &mut accumulated);
+        extract_streaming_tool_calls(&frame1, "openai", &mut accumulated);
+        extract_streaming_tool_calls(&frame2, "openai", &mut accumulated);
         assert_eq!(accumulated.len(), 2);
 
         let mut stats = make_stats(300, 295, 4, 4, 1, 0, 1, Some(8.0), 200.0, 3.0, "flag");
@@ -3437,8 +3704,8 @@ mod tests {
             }]
         });
 
-        extract_streaming_tool_args(&delta1, &mut args);
-        extract_streaming_tool_args(&delta2, &mut args);
+        extract_streaming_tool_args(&delta1, "openai", &mut args);
+        extract_streaming_tool_args(&delta2, "openai", &mut args);
 
         assert_eq!(args.len(), 1, "should have exactly one tool call index");
         assert_eq!(
@@ -3479,10 +3746,10 @@ mod tests {
             ]}}]
         });
 
-        extract_streaming_tool_args(&d1, &mut args);
-        extract_streaming_tool_args(&d2, &mut args);
-        extract_streaming_tool_args(&d3, &mut args);
-        extract_streaming_tool_args(&d4, &mut args);
+        extract_streaming_tool_args(&d1, "openai", &mut args);
+        extract_streaming_tool_args(&d2, "openai", &mut args);
+        extract_streaming_tool_args(&d3, "openai", &mut args);
+        extract_streaming_tool_args(&d4, "openai", &mut args);
 
         assert_eq!(
             args.len(),

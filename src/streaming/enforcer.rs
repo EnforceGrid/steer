@@ -51,7 +51,9 @@ pub fn process_chunk(
         if !new_findings.is_empty() {
             findings.extend(new_findings);
         }
-        output.extend_from_slice(&scanned);
+        let scanned_str = String::from_utf8_lossy(&scanned);
+        let encoded = parser.encode_text_delta(&scanned_str);
+        output.extend_from_slice(&encoded);
     }
 
     (output, false)
@@ -66,11 +68,30 @@ fn extract_delta_text(v: &serde_json::Value) -> Option<String> {
         .and_then(|c| c.as_str())
         .map(|s| s.to_string())
         .or_else(|| {
-            // Anthropic: delta.text
+            // Anthropic/Bedrock text_delta: delta.text
             v.get("delta")
                 .and_then(|d| d.get("text"))
                 .and_then(|t| t.as_str())
                 .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            // Anthropic/Bedrock thinking_delta: delta.thinking (Claude 3.7+ extended thinking)
+            v.get("delta")
+                .and_then(|d| d.get("thinking"))
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            // Gemini: candidates[0].content.parts[*].text
+            let parts = v.get("candidates")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("content"))
+                .and_then(|c| c.get("parts"))
+                .and_then(|p| p.as_array())?;
+            let text: String = parts.iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect();
+            if text.is_empty() { None } else { Some(text) }
         })
 }
 
@@ -450,6 +471,38 @@ mod tests {
             "finish_reason value must be preserved verbatim, got: {:?}",
             text
         );
+    }
+
+    // ─── encode_text_delta wire format tests ────────────────────────────────
+
+    #[test]
+    fn process_chunk_emits_sse_framed_output_for_text_delta() {
+        let engine = engine_passthrough();
+        let raw = b"data: {\"choices\":[{\"delta\":{\"content\":\"hello world \"}}]}\n\n";
+        let (out, _control) = run(&engine, raw);
+
+        if !out.is_empty() {
+            let text = std::str::from_utf8(&out).unwrap();
+            assert!(text.starts_with("data: "), "output must be SSE-framed, got: {:?}", text);
+            assert!(text.ends_with("\n\n"), "output must end with SSE terminator, got: {:?}", text);
+            assert!(text.contains("hello world"), "text content must be preserved");
+        }
+    }
+
+    #[test]
+    fn process_chunk_pii_redacted_output_is_sse_framed() {
+        let engine = engine_with_email();
+        let raw = b"data: {\"choices\":[{\"delta\":{\"content\":\"email user@example.com \"}}]}\n\n";
+        let mut buffer = WordBoundaryBuffer::new(1024);
+        let mut findings = vec![];
+        let (out, _) = process_chunk(raw, &mut buffer, &engine, "openai", "", &mut findings);
+
+        if !out.is_empty() {
+            let text = std::str::from_utf8(&out).unwrap();
+            assert!(text.starts_with("data: "), "redacted output must be SSE-framed");
+            assert!(text.ends_with("\n\n"), "redacted output must end with SSE terminator");
+            assert!(!text.contains("user@example.com"), "raw email must not appear in output");
+        }
     }
 
     /// End-to-end: a realistic tool-call streaming sequence — tool_call deltas
