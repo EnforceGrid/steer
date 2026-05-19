@@ -18,6 +18,7 @@ use tracing::warn;
 use sha2::{Digest, Sha256};
 
 use crate::audit::AuditSink;
+use crate::handover::{HoldStatus, HoldStore};
 use crate::auth::resolve_auth_for_provider;
 use crate::config::SteerConfig;
 use crate::detectors::tool_governance::ToolGovernanceDetector;
@@ -123,6 +124,8 @@ pub struct PipelineState {
     pub mcp_registry: Arc<dyn crate::mcp_registry::McpRegistryProvider>,
     /// Pre-built tool governance detector — avoids rebuilding the HashSet on every request.
     pub tool_governance: ToolGovernanceDetector,
+    /// Human-in-the-loop hold store — parked requests awaiting reviewer approval.
+    pub hold_store: Arc<HoldStore>,
 }
 
 impl PipelineState {
@@ -685,6 +688,128 @@ pub async fn run(
             resp.headers_mut().insert("eg-policy-input", hv);
         }
         return resp;
+    }
+
+    // ── Human-in-the-loop hold (action = steer) ──────────────────────────────
+    // When Cedar fires action=steer and handover is enabled, park the request in
+    // the HoldStore and long-poll until a reviewer approves, rejects, or the
+    // configured timeout elapses.
+    if request_decision.action == EnforcementAction::Steer && state.config.handover.enabled {
+        let request_hash = hex::encode(Sha256::digest(&body_bytes));
+        let reason = request_decision
+            .steer_message
+            .as_deref()
+            .or(request_decision.rule_id.as_deref())
+            .unwrap_or("policy_hold");
+        match state.hold_store.create(
+            reason,
+            Some(principal.to_string()),
+            &request_hash,
+            request_decision.rule_id.clone(),
+            Some(tenant_id.clone()),
+        ) {
+            Ok(hold) => {
+                let overhead_ms = start.elapsed().as_secs_f64() * 1000.0;
+                let req_payload_ref = if should_retain_payload(&state.config.audit, "steer") {
+                    retained_request_payload.as_deref()
+                } else {
+                    None
+                };
+                let entry = build_audit_entry(AuditParams {
+                    audit_id: &audit_id,
+                    request_id: &eg.request_id,
+                    method: &method,
+                    path: uri.path(),
+                    model: model.as_deref(),
+                    streaming: is_streaming,
+                    status: 0,
+                    overhead_ms,
+                    upstream_ms: 0.0,
+                    pii_findings: &pii_result.findings,
+                    action: "steer",
+                    rule_id: request_decision.rule_id.as_deref(),
+                    description: request_decision.description.as_deref(),
+                    regulatory_mapping: &request_decision.regulatory_mapping,
+                    matched_rules: &request_decision.matched_rules,
+                    retries_made: 0,
+                    fallback_triggered: false,
+                    labels: &build_labels(
+                        detector_results,
+                        &pii_result.findings,
+                        "steer",
+                        request_decision.rule_id.as_deref(),
+                    ),
+                    request_payload: req_payload_ref,
+                    response_payload: None,
+                    tenant_id: &tenant_id,
+                    agent_id: Some(principal),
+                    context_snapshot: Some(&policy_context),
+                    hold_id: Some(&hold.hold_id),
+                });
+                state.audit_sink.write(entry);
+
+                let poll_interval = tokio::time::Duration::from_millis(500);
+                let deadline = tokio::time::Instant::now()
+                    + tokio::time::Duration::from_secs(state.config.handover.timeout_secs);
+                loop {
+                    tokio::time::sleep(poll_interval).await;
+                    match state.hold_store.get(&hold.hold_id) {
+                        Some(h) if h.status == HoldStatus::Approved => break,
+                        Some(h) if h.status == HoldStatus::Rejected => {
+                            let mut resp = SteerError::PolicyBlock {
+                                rule: hold
+                                    .policy_id
+                                    .clone()
+                                    .unwrap_or_else(|| "hold_rejected".to_string()),
+                            }
+                            .into_response();
+                            resp.headers_mut()
+                                .insert("eg-audit-id", audit_id.parse().unwrap());
+                            if let Ok(hv) = hold.hold_id.parse() {
+                                resp.headers_mut().insert("eg-hold-id", hv);
+                            }
+                            return resp;
+                        }
+                        _ => {}
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        state
+                            .hold_store
+                            .update_status(&hold.hold_id, HoldStatus::Expired);
+                        return Response::builder()
+                            .status(503)
+                            .header("content-type", "application/json")
+                            .header("eg-audit-id", audit_id.as_str())
+                            .header("eg-hold-id", hold.hold_id.as_str())
+                            .body(axum::body::Body::from(format!(
+                                r#"{{"error":"hold_timeout","hold_id":"{}","message":"No reviewer decision within {}s"}}"#,
+                                hold.hold_id, state.config.handover.timeout_secs
+                            )))
+                            .unwrap_or_else(|_| {
+                                Response::builder()
+                                    .status(503)
+                                    .body(axum::body::Body::empty())
+                                    .unwrap()
+                            });
+                    }
+                }
+                // Approved — fall through to Phase 5.
+            }
+            Err(_) => {
+                return Response::builder()
+                    .status(503)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"error":"holds_capacity","message":"Max concurrent holds exceeded"}"#,
+                    ))
+                    .unwrap_or_else(|_| {
+                        Response::builder()
+                            .status(503)
+                            .body(axum::body::Body::empty())
+                            .unwrap()
+                    });
+            }
+        }
     }
 
     // ── Phase 5: Upstream call with retry + fallback chain ───────────────────

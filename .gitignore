@@ -27,3 +27,4 @@ steer.yaml
 *.swp
 *.swo
 *~
+.hitl-policies/

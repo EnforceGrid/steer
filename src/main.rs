@@ -225,6 +225,7 @@ async fn main() -> anyhow::Result<()> {
         kill_switch: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         mcp_registry: Arc::clone(&mcp_registry),
         tool_governance,
+        hold_store: Arc::clone(&hold_store),
     });
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT));

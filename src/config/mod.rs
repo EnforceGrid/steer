@@ -260,6 +260,9 @@ pub struct HandoverConfig {
     pub reviewer_url: Option<String>,
     #[serde(default = "default_max_holds")]
     pub max_concurrent_holds: usize,
+    /// Seconds to wait for a reviewer decision before expiring the hold. Default: 30.
+    #[serde(default = "default_hold_timeout")]
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -408,6 +411,9 @@ fn default_max_size_mb() -> u64 {
 }
 fn default_max_holds() -> usize {
     100
+}
+fn default_hold_timeout() -> u64 {
+    30
 }
 fn default_retain_payloads() -> String {
     "masked".to_string()

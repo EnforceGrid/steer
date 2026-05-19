@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct AuditEntry {
     pub audit_id: String,
     pub timestamp: String,
+    // Omitted in OSS (always ""). Enterprise populates for hash-chain verification.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub prev_hash: String,
 
     pub request: RequestInfo,
