@@ -34,7 +34,7 @@ use steer_core::tenants::{
 use steer_core::tokens::{BudgetCache, CostEstimator, ModelCost, NoopTokenProvider, TokenProvider};
 
 #[derive(Parser, Debug)]
-#[command(name = "steer", about = "EnforceGrid - Runtime AI enforcement engine")]
+#[command(name = "steer", version, about = "EnforceGrid - Runtime AI enforcement engine")]
 struct Cli {
     #[arg(short, long, default_value = "steer.yaml", env = "STEER_CONFIG")]
     config: String,

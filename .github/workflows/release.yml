@@ -1,0 +1,296 @@
+# Steer binary release workflow
+#
+# Triggered by pushing a tag matching v*.*.* (e.g. v0.1.0, v0.1.0-rc1).
+# Builds five platform binaries, generates per-artifact SHA256 sums,
+# attaches GitHub-native build provenance attestations (SLSA L2),
+# and publishes everything to a GitHub Release for the tag.
+#
+# Spec: stage/binary_distribution_plan.md (§4, §5, §6, §9, §14)
+#
+# Security:
+#   - Workflow-level permissions default to {} (deny-all). Jobs opt in.
+#   - All third-party actions are pinned by version tag (e.g. @v4).
+#     For production, replace tag pins with commit SHAs and add a comment
+#     restating the version. Example:
+#         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+#     Tag pins are mutable; SHA pins are not. Dependabot can update SHAs.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# Deny-all by default. Each job opts into the minimum permissions it needs.
+permissions: {}
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read         # checkout the tag
+      id-token: write        # OIDC token for attest-build-provenance
+      attestations: write    # write the provenance attestation
+    strategy:
+      fail-fast: false       # one target failure must not abort the others
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest      # macos-latest is arm64 as of 2026
+            cross: false
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-13          # last x86_64 macOS runner
+            cross: false
+            archive: tar.gz
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest     # cross-compile via cargo-zigbuild
+            cross: true
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            cross: false
+            archive: zip
+
+    steps:
+      # SHA-pin recommended for production. Example:
+      # uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain (${{ matrix.target }})
+        # SHA-pin recommended for production.
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-03-27
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install zig + cargo-zigbuild (cross only)
+        if: matrix.cross == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          # cargo-zigbuild bundles musl/glibc selection logic on top of zig cc.
+          # Install zig from the official tarball and cargo-zigbuild from crates.io.
+          ZIG_VERSION="0.16.0"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
+            | tar -xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-linux-x86_64-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          cargo install --locked cargo-zigbuild
+
+      - name: Cargo build (native)
+        if: matrix.cross == false
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --bin steer --target ${{ matrix.target }}
+
+      - name: Cargo zigbuild (cross)
+        if: matrix.cross == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo zigbuild --release --locked --bin steer --target ${{ matrix.target }}
+
+      - name: Smoke test (native targets only)
+        # Skipped for aarch64-unknown-linux-gnu: the cross-compiled binary
+        # cannot run on the x86_64 GitHub runner. Real runtime validation
+        # for aarch64 Linux happens during Phase D (first release on a
+        # real arm64 host) and Phase F (external tester).
+        #
+        # NOTE: src/main.rs defines `Cli` with `#[derive(Parser)]` but does
+        # not set `version = ...` on the #[command] attribute, so clap does
+        # not currently expose --version. This step will likely FAIL until
+        # the Cli is updated to e.g. `#[command(name = "steer", version)]`.
+        # We deliberately keep --version per spec §14 so the regression is
+        # surfaced loudly rather than papered over.
+        if: matrix.cross == false
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            BIN="target/${{ matrix.target }}/release/steer.exe"
+          else
+            BIN="target/${{ matrix.target }}/release/steer"
+          fi
+          "$BIN" --version
+
+      - name: Stage tarball contents
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          TARGET="${{ matrix.target }}"
+          STAGE_DIR="steer-${TAG}-${TARGET}"
+
+          mkdir -p "${STAGE_DIR}/dsl/policies"
+
+          if [ "${TARGET}" = "x86_64-pc-windows-msvc" ]; then
+            cp "target/${TARGET}/release/steer.exe" "${STAGE_DIR}/steer.exe"
+          else
+            cp "target/${TARGET}/release/steer"     "${STAGE_DIR}/steer"
+            chmod +x "${STAGE_DIR}/steer"
+          fi
+
+          cp steer.example.yaml          "${STAGE_DIR}/steer.example.yaml"
+          cp dsl/policies/default.cedar  "${STAGE_DIR}/dsl/policies/default.cedar"
+          cp LICENSE                     "${STAGE_DIR}/LICENSE"
+
+          # Minimal README excerpt bundled with the binary. The full README
+          # lives in the repo; this is the "getting started in 30 seconds"
+          # slice for someone who downloaded just the tarball.
+          cat > "${STAGE_DIR}/README.md" <<EOF
+          # Steer ${TAG} (${TARGET})
+
+          Runtime AI enforcement engine. This archive contains a prebuilt
+          \`steer\` binary plus the default config template and policy bundle.
+
+          ## Quick start
+
+          1. Copy the example config:
+             \`cp steer.example.yaml steer.yaml\`
+          2. Edit \`steer.yaml\` and set your provider API keys.
+          3. Run: \`./steer --config steer.yaml\`
+          4. Verify: \`curl http://localhost:8080/health\`
+
+          ## Files in this archive
+
+          - \`steer\` — the binary (\`steer.exe\` on Windows)
+          - \`steer.example.yaml\` — default config template
+          - \`dsl/policies/default.cedar\` — default policy bundle
+          - \`LICENSE\` — Apache-2.0
+
+          ## Documentation
+
+          - Source: https://github.com/${{ github.repository }}
+          - Release: https://github.com/${{ github.repository }}/releases/tag/${TAG}
+          EOF
+
+          echo "stage_dir=${STAGE_DIR}" >> "$GITHUB_OUTPUT"
+
+      - name: Create archive (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE_DIR="${{ steps.stage.outputs.stage_dir }}"
+          tar -czf "${STAGE_DIR}.tar.gz" "${STAGE_DIR}"
+
+      - name: Create archive (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stageDir = '${{ steps.stage.outputs.stage_dir }}'
+          Compress-Archive -Path $stageDir -DestinationPath "$stageDir.zip"
+
+      - name: Compute artifact filename
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          TARGET="${{ matrix.target }}"
+          EXT="${{ matrix.archive }}"
+          FILE="steer-${TAG}-${TARGET}.${EXT}"
+          echo "file=${FILE}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute SHA256 (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="${{ steps.artifact.outputs.file }}"
+          # macOS uses `shasum -a 256`; Linux has `sha256sum`. Both emit the
+          # standard "<hex>  <filename>" format consumed by `sha256sum -c`.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${FILE}" > "${FILE}.sha256"
+          else
+            shasum -a 256 "${FILE}" > "${FILE}.sha256"
+          fi
+          cat "${FILE}.sha256"
+
+      - name: Compute SHA256 (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $file = '${{ steps.artifact.outputs.file }}'
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $file).Hash.ToLower()
+          # Two-space separator matches `sha256sum`/`shasum -a 256` output so
+          # the aggregated SHA256SUMS file is verifiable with `sha256sum -c`.
+          "$hash  $file" | Out-File -FilePath "$file.sha256" -Encoding ascii -NoNewline
+          Get-Content "$file.sha256"
+
+      - name: Attest build provenance
+        # SHA-pin recommended for production.
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: ${{ steps.artifact.outputs.file }}
+
+      - name: Upload workflow artifact
+        # SHA-pin recommended for production.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: steer-${{ matrix.target }}
+          path: |
+            ${{ steps.artifact.outputs.file }}
+            ${{ steps.artifact.outputs.file }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create / update the GitHub Release
+    steps:
+      - name: Download all per-target artifacts
+        # SHA-pin recommended for production.
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: steer-*
+          merge-multiple: true
+
+      - name: Assemble SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -la
+          # Concatenate every per-target .sha256 fragment into a single
+          # SHA256SUMS file. Sort for deterministic ordering so reviewers
+          # can diff release-to-release.
+          : > SHA256SUMS
+          for f in $(ls *.sha256 | sort); do
+            cat "$f" >> SHA256SUMS
+            # Ensure each fragment ends with a newline; some shells emit
+            # files without a trailing newline.
+            tail -c1 SHA256SUMS | od -An -c | grep -q '\\n' || echo "" >> SHA256SUMS
+          done
+          rm -f *.sha256
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        # SHA-pin recommended for production.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}  # v0.1.0-rc1 -> prerelease
+          generate_release_notes: true                       # commits since previous tag
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS

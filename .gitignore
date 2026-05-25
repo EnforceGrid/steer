@@ -1,8 +1,12 @@
+# Staging area for doc/distribution restructure work — never committed.
+# Contents are promoted to top level individually when ready.
+/stage/
+
 # Build
 /target/
 
-# Libraries don't pin dependencies — don't commit lock file
-Cargo.lock
+# Cargo.lock is committed — Steer ships a binary, reproducible builds require it.
+# (For pure libraries you would skip this and not commit Cargo.lock.)
 
 # Local dev overrides
 .cargo/config.toml
