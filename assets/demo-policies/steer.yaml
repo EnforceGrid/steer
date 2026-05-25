@@ -1,0 +1,59 @@
+# Demo config — used by assets/demo.tape. Pinned values for a reproducible
+# recording. Not intended for production.
+
+proxy:
+  host: "127.0.0.1"
+  port: 9090
+  fail_open: false
+
+upstream:
+  base_url: "https://api.anthropic.com"
+  api_key: ""
+
+pii:
+  enabled: true
+  patterns:
+    - credit_card
+    - ssn
+    - email
+    - phone
+    - phone_intl
+    - ip_address
+    - iban
+    - anthropic_key
+    - openai_key
+    - github_token
+    - slack_token
+    - stripe_key
+    - aws_access_key
+    - aws_secret_key
+    - azure_key
+    - google_api_key
+    - jwt
+    - bearer_token
+    - generic_secret
+
+policy:
+  format: cedar
+  policy_dir: "/tmp/steer-demo-recording/cfg/policies"
+  watch: false
+  mode: enforce
+
+audit:
+  backend: stdout
+  format: compact
+
+streaming:
+  enabled: true
+  buffer_size_bytes: 512
+  buffer_timeout_ms: 200
+
+handover:
+  enabled: false
+
+tenant:
+  consent_given: true
+  industry: "other"
+  timezone: "UTC"
+  region: ""
+  business_hours_window: ""
