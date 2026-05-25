@@ -1,0 +1,12 @@
+[package]
+name = "steer-llm"
+version = "0.1.0"
+edition = "2021"
+description = "Open-source runtime enforcement for AI agents — Cedar policies on LLM traffic. This crate is a placeholder name reservation; the canonical install path is the release binaries at github.com/enforcegrid/steer."
+license = "Apache-2.0"
+repository = "https://github.com/enforcegrid/steer"
+homepage = "https://github.com/enforcegrid/steer"
+documentation = "https://github.com/enforcegrid/steer"
+readme = "README.md"
+keywords = ["ai", "llm", "security", "policy", "proxy"]
+categories = ["command-line-utilities", "development-tools"]

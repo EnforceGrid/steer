@@ -50,7 +50,10 @@ dashmap = "6"
 crc32fast = "1"
 
 [profile.release]
-lto = "thin"
+lto = "fat"            # Cross-crate optimization across all dependencies
+codegen-units = 1      # Better optimization at the cost of slower compile (release only)
+strip = "symbols"      # Strip debug + symbol table — ~25-40% binary size reduction
+panic = "abort"        # No unwinding — smaller binary; verified no catch_unwind in src/
 
 [dev-dependencies]
 axum-test = "14"
