@@ -64,7 +64,7 @@ Enforcement outcomes:
 • hold for approval
 
 Signals:
-• PII
+• PII & secrets (API keys, tokens)
 • prompt injection
 • jailbreaks
 • exfiltration
@@ -142,7 +142,7 @@ LangChain · LangGraph · CrewAI · AutoGen · Semantic Kernel · Mastra · any 
 
 | Policy | Enforcement | Trigger |
 |---|---|---|
-| `default-pii-flag` | flag | PII in request |
+| `default-pii-flag` | flag | PII or secrets (API keys, tokens) in request |
 | `default-confidential-flag` | flag | Confidential data in response |
 | `default-confidential-redact` | **transform** | Classification markers → `[CLASSIFICATION REDACTED]` |
 | `default-no-consent-flag` | flag | Data processing consent not recorded |

@@ -30,13 +30,29 @@ models:
     model: claude-haiku-4-5-20251001
 
 # ── PII detection ────────────────────────────────────────────────────────────
+# Defaults cover personal data and the credential shapes most likely to leak
+# from a developer prompt. To slim the list, comment out lines below.
+# Additional patterns available: phone_intl, ip_address, iban, jwt,
+# bearer_token, generic_secret. See docs for full registry.
 pii:
   enabled: true
   patterns:
+    # Personal data
     - credit_card
     - ssn
     - email
     - phone
+    # Provider API keys
+    - anthropic_key
+    - openai_key
+    - github_token
+    - slack_token
+    - stripe_key
+    # Cloud credentials
+    - aws_access_key
+    - aws_secret_key
+    - azure_key
+    - google_api_key
 
 # ── Cedar policy enforcement ─────────────────────────────────────────────────
 policy:
