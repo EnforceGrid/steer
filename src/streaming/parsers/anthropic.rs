@@ -1,11 +1,13 @@
+use crate::streaming::parsers::{SseFrame, StreamParser};
 use bytes::Bytes;
 use serde_json::json;
-use crate::streaming::parsers::{SseFrame, StreamParser};
 
 pub struct AnthropicParser;
 
 impl StreamParser for AnthropicParser {
-    fn provider(&self) -> &str { "anthropic" }
+    fn provider(&self) -> &str {
+        "anthropic"
+    }
 
     fn parse_frame(&self, raw: &[u8]) -> Vec<SseFrame> {
         let text = match std::str::from_utf8(raw) {
@@ -69,6 +71,15 @@ impl StreamParser for AnthropicParser {
             delta, stop
         ))
     }
+
+    fn encode_text_delta(&self, text: &str) -> Bytes {
+        let payload = json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text}
+        });
+        Bytes::from(format!("event: content_block_delta\ndata: {}\n\n", payload))
+    }
 }
 
 #[cfg(test)]
@@ -76,7 +87,9 @@ mod tests {
     use super::*;
     use crate::streaming::parsers::StreamParser;
 
-    fn parser() -> AnthropicParser { AnthropicParser }
+    fn parser() -> AnthropicParser {
+        AnthropicParser
+    }
 
     #[test]
     fn parse_frame_extracts_content_block_delta() {
@@ -152,7 +165,11 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].event.as_deref(), Some("content_block_delta"));
         assert!(!frames[0].is_done);
-        assert!(frames[0].data.contains("hello"), "Content should be 'hello', got: {}", frames[0].data);
+        assert!(
+            frames[0].data.contains("hello"),
+            "Content should be 'hello', got: {}",
+            frames[0].data
+        );
     }
 
     #[test]
@@ -169,7 +186,7 @@ mod tests {
         // After chunk 1: first event is complete
         sse_buf.extend_from_slice(chunk1);
         let events = extract_complete_sse_events(&mut sse_buf);
-        assert!(events.len() >= 1, "First event should be complete");
+        assert!(!events.is_empty(), "First event should be complete");
 
         let frames1 = parser().parse_frame(&events[0]);
         assert_eq!(frames1.len(), 1);
@@ -179,7 +196,10 @@ mod tests {
         // After chunk 2: message_stop should be extractable
         sse_buf.extend_from_slice(chunk2);
         let events2 = extract_complete_sse_events(&mut sse_buf);
-        assert!(!events2.is_empty(), "message_stop event should be extractable");
+        assert!(
+            !events2.is_empty(),
+            "message_stop event should be extractable"
+        );
 
         let mut found_done = false;
         for ev in &events2 {
@@ -190,7 +210,10 @@ mod tests {
                 }
             }
         }
-        assert!(found_done, "Should find message_stop frame after reassembly");
+        assert!(
+            found_done,
+            "Should find message_stop frame after reassembly"
+        );
     }
 
     #[test]
@@ -217,12 +240,68 @@ mod tests {
         assert!(!frames[0].is_done);
 
         // Verify tool id and name are extractable from parsed data
-        let parsed: serde_json::Value = serde_json::from_str(&frames[0].data)
-            .expect("Should parse as valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&frames[0].data).expect("Should parse as valid JSON");
         let content_block = &parsed["content_block"];
         assert_eq!(content_block["id"].as_str().unwrap(), "toolu_ABC");
         assert_eq!(content_block["name"].as_str().unwrap(), "my_tool");
         assert_eq!(content_block["type"].as_str().unwrap(), "tool_use");
+    }
+
+    // ─── encode_text_delta tests ─────────────────────────────────────────────
+
+    #[test]
+    fn encode_text_delta_produces_valid_sse_frame() {
+        let encoded = parser().encode_text_delta("hello world");
+        let text = std::str::from_utf8(&encoded).unwrap();
+        assert!(text.ends_with("\n\n"), "must end with SSE event terminator");
+        assert!(text.contains("data: "), "must contain SSE data line");
+        assert!(
+            text.contains("event: content_block_delta"),
+            "must include event type line"
+        );
+    }
+
+    #[test]
+    fn encode_text_delta_content_round_trips() {
+        let encoded = parser().encode_text_delta("hello world");
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event.as_deref(), Some("content_block_delta"));
+        assert!(!frames[0].is_done);
+        assert!(!frames[0].is_error);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        let text = v["delta"]["text"].as_str().unwrap();
+        assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn encode_text_delta_type_is_text_delta() {
+        let encoded = parser().encode_text_delta("test");
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        assert_eq!(v["type"].as_str().unwrap(), "content_block_delta");
+        assert_eq!(v["delta"]["type"].as_str().unwrap(), "text_delta");
+    }
+
+    #[test]
+    fn encode_text_delta_pii_redacted_text_round_trips() {
+        let redacted = "call [REDACTED_PHONE] now";
+        let encoded = parser().encode_text_delta(redacted);
+        let frames = parser().parse_frame(&encoded);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        assert_eq!(v["delta"]["text"].as_str().unwrap(), redacted);
+    }
+
+    #[test]
+    fn encode_text_delta_special_chars_json_escaped() {
+        let text = r#"say "hello" \ world"#;
+        let encoded = parser().encode_text_delta(text);
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        assert_eq!(v["delta"]["text"].as_str().unwrap(), text);
     }
 
     #[test]
@@ -230,9 +309,19 @@ mod tests {
         // Two complete Anthropic events in a single chunk — regression test
         let raw = b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"a\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"b\"}}\n\n";
         let frames = parser().parse_frame(raw);
-        assert_eq!(frames.len(), 2, "Two complete events should produce two frames");
-        assert!(frames[0].data.contains("\"a\""), "First frame should contain 'a'");
-        assert!(frames[1].data.contains("\"b\""), "Second frame should contain 'b'");
+        assert_eq!(
+            frames.len(),
+            2,
+            "Two complete events should produce two frames"
+        );
+        assert!(
+            frames[0].data.contains("\"a\""),
+            "First frame should contain 'a'"
+        );
+        assert!(
+            frames[1].data.contains("\"b\""),
+            "Second frame should contain 'b'"
+        );
         assert!(!frames[0].is_done);
         assert!(!frames[1].is_done);
     }

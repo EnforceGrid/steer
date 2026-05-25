@@ -21,15 +21,18 @@ macro_rules! pii_pattern {
 
 pub static CREDIT_CARD: PiiPattern = pii_pattern!(
     "credit_card",
-    r"\b(?:4[0-9]{12}(?:[0-9]{3})?|[25][1-7][0-9]{14}|6(?:011|5[0-9][0-9])[0-9]{12}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\d{3})\d{11})\b",
+    // Each brand pattern allows `[\s-]?` between 4-digit groups so the
+    // canonical display formats are caught:
+    //   4111111111111111         (contiguous)
+    //   4111 1111 1111 1111      (space-separated, most common in UI)
+    //   4111-1111-1111-1111      (dash-separated)
+    // Visa: 13 or 16 digits. MC: 16. Amex: 15. Discover: 16. Diners: 14.
+    r"\b(?:4\d{3}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{1,4}|[25][1-7]\d{2}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}|6(?:011|5\d{2})[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}|3[47]\d{2}[\s-]?\d{6}[\s-]?\d{5}|3(?:0[0-5]|[68]\d)\d[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{2}|(?:2131|1800|35\d{3})\d{11})\b",
     "[REDACTED_CREDIT_CARD]"
 );
 
-pub static SSN: PiiPattern = pii_pattern!(
-    "ssn",
-    r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b",
-    "[REDACTED_SSN]"
-);
+pub static SSN: PiiPattern =
+    pii_pattern!("ssn", r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b", "[REDACTED_SSN]");
 
 pub static EMAIL: PiiPattern = pii_pattern!(
     "email",
@@ -59,21 +62,29 @@ pub static IP_ADDRESS: PiiPattern = pii_pattern!(
 
 // ── Auth tokens & secrets ────────────────────────────────────────────────────
 
+// Note on secret-prefix patterns below: the leading `\b` word boundary was
+// removed because real-world key leaks often have noise immediately before
+// the prefix (`OPENAI_API_KEY=Ysk-...`, autocomplete artifacts, etc.) where
+// `\b` fails because both adjacent chars are word chars. The prefixes
+// themselves (`sk-`, `sk-ant-`, `AKIA`, `ghp_`, `xox*-`, `[sr]k_(live|test)_`)
+// are specific enough that drop-in false positives on benign text are rare.
+// We err on the side of detection for security signals.
+
 pub static OPENAI_KEY: PiiPattern = pii_pattern!(
     "openai_key",
-    r"\bsk-[A-Za-z0-9_-]{20,}\b",
+    r"sk-[A-Za-z0-9_-]{20,}\b",
     "[REDACTED_API_KEY]"
 );
 
 pub static ANTHROPIC_KEY: PiiPattern = pii_pattern!(
     "anthropic_key",
-    r"\bsk-ant-[A-Za-z0-9_-]{20,}\b",
+    r"sk-ant-[A-Za-z0-9_-]{20,}\b",
     "[REDACTED_API_KEY]"
 );
 
 pub static AWS_ACCESS_KEY: PiiPattern = pii_pattern!(
     "aws_access_key",
-    r"\bAKIA[0-9A-Z]{16}\b",
+    r"AKIA[0-9A-Z]{16}\b",
     "[REDACTED_AWS_KEY]"
 );
 
@@ -86,19 +97,19 @@ pub static AWS_SECRET_KEY: PiiPattern = pii_pattern!(
 pub static GITHUB_TOKEN: PiiPattern = pii_pattern!(
     "github_token",
     // ghp_ (PAT), gho_ (OAuth), ghu_ (user-to-server), ghs_ (server-to-server), ghr_ (refresh)
-    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}\b",
+    r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}\b",
     "[REDACTED_GITHUB_TOKEN]"
 );
 
 pub static SLACK_TOKEN: PiiPattern = pii_pattern!(
     "slack_token",
-    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b",
+    r"xox[baprs]-[A-Za-z0-9-]{10,}\b",
     "[REDACTED_SLACK_TOKEN]"
 );
 
 pub static STRIPE_KEY: PiiPattern = pii_pattern!(
     "stripe_key",
-    r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{20,}\b",
+    r"[sr]k_(?:live|test)_[A-Za-z0-9]{20,}\b",
     "[REDACTED_STRIPE_KEY]"
 );
 
@@ -152,15 +163,28 @@ pub static GOOGLE_API_KEY: PiiPattern = pii_pattern!(
 pub fn all_patterns() -> Vec<&'static PiiPattern> {
     vec![
         // Personal data
-        &CREDIT_CARD, &SSN, &EMAIL, &PHONE, &PHONE_INTL, &IP_ADDRESS,
+        &CREDIT_CARD,
+        &SSN,
+        &EMAIL,
+        &PHONE,
+        &PHONE_INTL,
+        &IP_ADDRESS,
         // Financial
         &IBAN,
         // Auth tokens — specific patterns before generic to get accurate labels
-        &ANTHROPIC_KEY, &OPENAI_KEY, &AWS_ACCESS_KEY, &AWS_SECRET_KEY,
-        &GITHUB_TOKEN, &SLACK_TOKEN, &STRIPE_KEY,
-        &JWT, &BEARER_TOKEN, &GENERIC_SECRET,
+        &ANTHROPIC_KEY,
+        &OPENAI_KEY,
+        &AWS_ACCESS_KEY,
+        &AWS_SECRET_KEY,
+        &GITHUB_TOKEN,
+        &SLACK_TOKEN,
+        &STRIPE_KEY,
+        &JWT,
+        &BEARER_TOKEN,
+        &GENERIC_SECRET,
         // Cloud provider keys
-        &AZURE_KEY, &GOOGLE_API_KEY,
+        &AZURE_KEY,
+        &GOOGLE_API_KEY,
     ]
 }
 
@@ -233,7 +257,10 @@ mod tests {
 
     #[test]
     fn github_token_matches() {
-        assert!(matches(&GITHUB_TOKEN, "token ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx1234"));
+        assert!(matches(
+            &GITHUB_TOKEN,
+            "token ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx1234"
+        ));
     }
 
     #[test]
@@ -243,12 +270,18 @@ mod tests {
 
     #[test]
     fn bearer_token_matches() {
-        assert!(matches(&BEARER_TOKEN, "use Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxxx"));
+        assert!(matches(
+            &BEARER_TOKEN,
+            "use Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxxx"
+        ));
     }
 
     #[test]
     fn generic_secret_matches() {
-        assert!(matches(&GENERIC_SECRET, r#"api_key="sk_test_abcdef1234567890""#));
+        assert!(matches(
+            &GENERIC_SECRET,
+            r#"api_key="sk_test_abcdef1234567890""#
+        ));
         assert!(matches(&GENERIC_SECRET, "password=SuperSecretPass1234!"));
     }
 
@@ -301,7 +334,11 @@ mod tests {
         // 64 base64 alphabet chars + 22 uppercase = ABCDEFGHIJKLMNOPQRSTUV = 86.
         let key = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/ABCDEFGHIJKLMNOPQRSTUV==";
         // Verify length at compile time via the assertion.
-        assert_eq!(key.len(), 88, "key string must be 88 chars (86 base64 + ==)");
+        assert_eq!(
+            key.len(),
+            88,
+            "key string must be 88 chars (86 base64 + ==)"
+        );
         assert!(matches(&AZURE_KEY, &format!("key {key}")));
     }
 
@@ -325,6 +362,61 @@ mod tests {
 
     #[test]
     fn google_api_key_wrong_prefix_no_match() {
-        assert!(!matches(&GOOGLE_API_KEY, "key BIzaSyD-9tSrke72Jiz2siaB_XABCDEFGHIJKlm ok"));
+        assert!(!matches(
+            &GOOGLE_API_KEY,
+            "key BIzaSyD-9tSrke72Jiz2siaB_XABCDEFGHIJKlm ok"
+        ));
+    }
+
+    // ── Real-world format coverage (regression tests for v0.1.0 defects) ──
+
+    #[test]
+    fn credit_card_space_separated() {
+        // Visa test number with spaces — the canonical UI display format.
+        assert!(matches(&CREDIT_CARD, "card 4111 1111 1111 1111 expires"));
+    }
+
+    #[test]
+    fn credit_card_dash_separated() {
+        assert!(matches(&CREDIT_CARD, "card 4111-1111-1111-1111 expires"));
+    }
+
+    #[test]
+    fn credit_card_contiguous_still_matches() {
+        // Original format must continue to work.
+        assert!(matches(&CREDIT_CARD, "card 4111111111111111 expires"));
+    }
+
+    #[test]
+    fn credit_card_amex_space_separated() {
+        // Amex test number: 15 digits, 4-6-5 grouping.
+        assert!(matches(&CREDIT_CARD, "amex 3782 822463 10005 here"));
+    }
+
+    #[test]
+    fn openai_key_with_word_char_prefix() {
+        // The leaked-key scenario: env-var assignment with a typo/noise
+        // char immediately before `sk-`. `\b` previously missed this; the
+        // current pattern matches inside-word because key prefixes are
+        // specific enough.
+        assert!(matches(
+            &OPENAI_KEY,
+            "OPENAI_API_KEY=Ysk-svcacct-9lA3pgDZWVY-_Lba9CD1PG0gWcyvbas6nwG9IwrW"
+        ));
+    }
+
+    #[test]
+    fn openai_key_service_account_format() {
+        // sk-svcacct-... is the OpenAI service-account key prefix added 2024.
+        assert!(matches(
+            &OPENAI_KEY,
+            "sk-svcacct-9lA3pgDZWVY-_Lba9CD1PG0gWcyvbas6nwG9IwrW"
+        ));
+    }
+
+    #[test]
+    fn aws_access_key_inside_word() {
+        // Same class of issue — preceding word char shouldn't hide the key.
+        assert!(matches(&AWS_ACCESS_KEY, "key=XAKIAIOSFODNN7EXAMPLE other"));
     }
 }

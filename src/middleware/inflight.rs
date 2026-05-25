@@ -4,11 +4,11 @@
 //! drain logic in `main.rs` can wait for all in-flight requests to complete
 //! before forcing a close.
 
-use std::sync::Arc;
-use std::task::{Context, Poll};
 use axum::http::Request;
 use axum::response::{IntoResponse, Response};
 use futures::future::BoxFuture;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use tokio::sync::Semaphore;
 use tower::{Layer, Service};
 
@@ -96,9 +96,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Router, routing::get};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::{routing::get, Router};
     use tower::ServiceExt; // for `oneshot`
 
     // Simple handler that always returns 200 OK.
@@ -121,10 +121,7 @@ mod tests {
         // Before the request, all permits are available.
         assert_eq!(semaphore.available_permits(), MAX_IN_FLIGHT);
 
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
@@ -140,10 +137,7 @@ mod tests {
         let semaphore = Arc::new(Semaphore::new(0));
         let app = make_router(Arc::clone(&semaphore));
 
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
@@ -163,22 +157,26 @@ mod tests {
         let app = make_router(Arc::clone(&semaphore));
 
         // Issue a request through the middleware.
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let _resp = app.oneshot(req).await.unwrap();
 
         // After completion all permits must be available — drain can proceed.
-        assert_eq!(semaphore.available_permits(), PERMITS,
-            "all permits must be released after request for drain to complete");
+        assert_eq!(
+            semaphore.available_permits(),
+            PERMITS,
+            "all permits must be released after request for drain to complete"
+        );
 
         // Simulate drain: acquiring all permits must succeed without blocking.
         let drain_result = tokio::time::timeout(
             tokio::time::Duration::from_millis(100),
             semaphore.acquire_many(PERMITS as u32),
-        ).await;
-        assert!(drain_result.is_ok(), "drain should not time out — all permits available");
+        )
+        .await;
+        assert!(
+            drain_result.is_ok(),
+            "drain should not time out — all permits available"
+        );
     }
 
     // T-029: A single in-flight request consumes exactly one permit.
@@ -189,18 +187,13 @@ mod tests {
         let semaphore = Arc::new(Semaphore::new(permits));
 
         // Pre-acquire 4 permits manually, leaving 1 available.
-        let _held: Vec<_> = (0..4)
-            .map(|_| semaphore.try_acquire().unwrap())
-            .collect();
+        let _held: Vec<_> = (0..4).map(|_| semaphore.try_acquire().unwrap()).collect();
         assert_eq!(semaphore.available_permits(), 1);
 
         let app = make_router(Arc::clone(&semaphore));
 
         // The last available permit is consumed by the request and returned.
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 

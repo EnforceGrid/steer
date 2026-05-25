@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -7,9 +7,17 @@ use uuid::Uuid;
 /// Also strip content-encoding: httpx/reqwest auto-decompresses, forwarding causes body mismatch.
 static HOP_BY_HOP: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-        "te", "trailers", "transfer-encoding", "upgrade", "host",
-        "content-length", "content-encoding",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
+        "content-encoding",
     ]
     .into_iter()
     .collect()
@@ -18,8 +26,13 @@ static HOP_BY_HOP: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 /// EG-* headers are consumed by EnforceGrid and must never be leaked upstream.
 static EG_HEADERS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "eg-agent", "eg-agent-name", "eg-agent-tags", "eg-agent-id",
-        "eg-sandbox", "eg-api-key", "x-mcp-server-id",
+        "eg-agent",
+        "eg-agent-name",
+        "eg-agent-tags",
+        "eg-agent-id",
+        "eg-sandbox",
+        "eg-api-key",
+        "x-mcp-server-id",
     ]
     .into_iter()
     .collect()
@@ -75,7 +88,12 @@ pub struct EgHeaders {
 impl EgHeaders {
     pub fn extract(headers: &axum::http::HeaderMap) -> Self {
         let get = |k: &str| -> Option<String> {
-            headers.get(k)?.to_str().ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+            headers
+                .get(k)?
+                .to_str()
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
         };
         let request_id = get("eg-request-id")
             .or_else(|| get("x-request-id"))
@@ -150,7 +168,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-api-key", "sk-ant-real".parse().unwrap());
         let forwarded = forward_headers(&headers);
-        assert!(forwarded.contains_key("x-api-key"), "x-api-key must pass through");
+        assert!(
+            forwarded.contains_key("x-api-key"),
+            "x-api-key must pass through"
+        );
     }
 
     #[test]
@@ -184,7 +205,10 @@ mod tests {
         headers.insert("x-mcp-server-id", "github-mcp".parse().unwrap());
         headers.insert("authorization", "Bearer token".parse().unwrap());
         let forwarded = forward_headers(&headers);
-        assert!(!forwarded.contains_key("x-mcp-server-id"), "X-MCP-Server-ID must not leak upstream");
+        assert!(
+            !forwarded.contains_key("x-mcp-server-id"),
+            "X-MCP-Server-ID must not leak upstream"
+        );
         assert!(forwarded.contains_key("authorization"));
     }
 }

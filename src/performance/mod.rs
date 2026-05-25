@@ -23,6 +23,10 @@ pub trait AnomalyProvider: Send + Sync {
 pub struct NoopAnomaly;
 
 impl AnomalyProvider for NoopAnomaly {
-    fn is_anomalous(&self) -> bool { false }
-    fn anomaly_type(&self) -> String { String::new() }
+    fn is_anomalous(&self) -> bool {
+        false
+    }
+    fn anomaly_type(&self) -> String {
+        String::new()
+    }
 }

@@ -1,5 +1,6 @@
 pub mod action;
 pub mod cedar;
+pub mod consistency;
 pub mod control_mapper;
 pub mod input;
 pub mod registry;
@@ -7,8 +8,8 @@ pub mod sync_promoter;
 pub mod watcher;
 
 pub use action::EnforcementAction;
-pub use input::{PolicyAction, PolicyInput, ContextParams, build_context, DetectionLabel};
 pub use cedar::CedarEngine;
+pub use input::{build_context, ContextParams, DetectionLabel, PolicyAction, PolicyInput};
 pub use watcher::PolicyWatcher;
 
 use crate::error::SteerResult;

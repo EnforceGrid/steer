@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// OIDC configuration — optional section in `SteerConfig`.
 /// Defined here (not in sso/oidc) so steer-core config doesn't depend on openidconnect.
@@ -67,6 +67,51 @@ pub struct SteerConfig {
     /// via the `mcp_server_approved` Cedar context field.
     #[serde(default)]
     pub mcp_allowlist: McpAllowlistConfig,
+    /// Per-tenant settings exposed for single-tenant OSS use. Multi-tenant
+    /// deployments (EnforceGrid Enterprise) source these from a DB; in OSS
+    /// these are the single tenant's values.
+    #[serde(default)]
+    pub tenant: TenantConfig,
+}
+
+/// YAML-exposed tenant settings. Maps 1:1 to `TenantSettings` (the runtime
+/// type the pipeline consumes). All fields default to conservative values —
+/// flip them in `steer.yaml` once the corresponding lawful basis / context
+/// is recorded elsewhere.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct TenantConfig {
+    /// Lawful basis recorded for data processing (GDPR Art 6 / AIUC-1 E005).
+    /// Default: `false`. When false, any policy that references
+    /// `context.consent_given == false` fires. The shipped baseline does
+    /// **not** include such a policy as of v0.1.0; operators who want this
+    /// flag drop an override `.cedar` file — see default.cedar header for
+    /// the snippet.
+    #[serde(default)]
+    pub consent_given: bool,
+    /// Tenant industry classification — surfaced into Cedar context as
+    /// `context.org_industry`. Default: `"other"`.
+    #[serde(default = "default_industry")]
+    pub industry: String,
+    /// Tenant timezone (IANA name). Surfaced as `context.org_timezone`.
+    /// Default: `"UTC"`.
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+    /// Tenant data residency region — surfaced as `context.org_region`.
+    /// Default: empty string.
+    #[serde(default)]
+    pub region: String,
+    /// Business hours window (e.g. "Mon-Fri 09:00-17:00"). Surfaced for
+    /// time-of-day policies. Default: empty (always considered active).
+    #[serde(default)]
+    pub business_hours_window: String,
+}
+
+fn default_industry() -> String {
+    "other".to_string()
+}
+
+fn default_timezone() -> String {
+    "UTC".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -177,6 +222,14 @@ pub struct PolicyConfig {
     /// When true, spawn a file watcher that hot-reloads .cedar files on change.
     #[serde(default)]
     pub watch: bool,
+    /// Enforcement mode: `"enforce"` (default) or `"observe"`.
+    /// `observe` rewrites every `@enforcement("block")` and
+    /// `@enforcement("steer")` annotation to `@enforcement("flag")` at load
+    /// time — every decision is logged but no traffic is blocked. Use for
+    /// the first 1-2 weeks of a production rollout to surface false
+    /// positives before flipping to `enforce`.
+    #[serde(default = "default_policy_mode")]
+    pub mode: String,
 }
 
 impl Default for PolicyConfig {
@@ -186,8 +239,13 @@ impl Default for PolicyConfig {
             policy_dir: default_policy_dir(),
             policy_file: None,
             watch: false,
+            mode: default_policy_mode(),
         }
     }
+}
+
+fn default_policy_mode() -> String {
+    "enforce".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -236,6 +294,15 @@ pub struct AuditConfig {
     /// Retention period in days for performance data. 0 = retain forever. Default: 30.
     #[serde(default = "default_perf_retention_days")]
     pub performance_retention_days: u64,
+    /// Output format: `"json"` (default), `"compact"`, or `"pretty"`.
+    /// - `json`: one full single-line JSON object per request. Default —
+    ///   meant for SIEM ingestion and machine processing.
+    /// - `compact`: one human-readable line per request — useful for
+    ///   `docker logs -f` and developer debugging.
+    /// - `pretty`: multi-line indented JSON — slowest, for ad-hoc
+    ///   inspection only.
+    #[serde(default = "default_audit_format")]
+    pub format: String,
 }
 
 impl Default for AuditConfig {
@@ -249,8 +316,13 @@ impl Default for AuditConfig {
             max_payload_bytes: default_max_payload_bytes(),
             retention_days: default_retention_days(),
             performance_retention_days: default_perf_retention_days(),
+            format: default_audit_format(),
         }
     }
+}
+
+fn default_audit_format() -> String {
+    "json".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -260,6 +332,9 @@ pub struct HandoverConfig {
     pub reviewer_url: Option<String>,
     #[serde(default = "default_max_holds")]
     pub max_concurrent_holds: usize,
+    /// Seconds to wait for a reviewer decision before expiring the hold. Default: 30.
+    #[serde(default = "default_hold_timeout")]
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -329,21 +404,12 @@ pub struct DetectorsConfig {
 ///     - "github-mcp-server"
 ///     - "filesystem-mcp-server"
 /// ```
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct McpAllowlistConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub approved_servers: Vec<String>,
-}
-
-impl Default for McpAllowlistConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            approved_servers: Vec::new(),
-        }
-    }
 }
 
 /// Per-model cost entry in `cadabra.yaml`.
@@ -362,55 +428,199 @@ pub struct ModelCostConfig {
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
-fn default_host() -> String { "0.0.0.0".to_string() }
-fn default_port() -> u16 { 8080 }
-fn default_true() -> bool { true }
-fn default_timeout_ms() -> u64 { 30_000 }
-fn default_retry() -> u32 { 2 }
-fn default_pool_max_idle_per_host() -> usize { 25 }
-fn default_tcp_keepalive_secs() -> u64 { 30 }
-fn default_openai_base() -> String { "https://api.openai.com".to_string() }
-fn default_pii_patterns() -> Vec<String> {
-    vec!["credit_card".into(), "ssn".into(), "email".into(), "phone".into()]
+fn default_host() -> String {
+    "0.0.0.0".to_string()
 }
-fn default_policy_format() -> String { "cedar".to_string() }
-fn default_policy_dir() -> String { "./dsl/policies".to_string() }
-fn default_buffer_size_bytes() -> usize { 512 }
-fn default_buffer_timeout_ms() -> u64 { 200 }
-fn default_audit_backend() -> String { "stdout".to_string() }
-fn default_audit_path() -> String { "./audit.jsonl".to_string() }
-fn default_max_size_mb() -> u64 { 100 }
-fn default_max_holds() -> usize { 100 }
-fn default_retain_payloads() -> String { "masked".to_string() }
-fn default_retain_on() -> String { "on_enforcement".to_string() }
-fn default_max_payload_bytes() -> usize { 32_768 }
-fn default_retention_days() -> u64 { 90 }
-fn default_perf_retention_days() -> u64 { 30 }
-fn default_perf_buffer() -> usize { 1000 }
-fn default_flush_interval() -> f64 { 5.0 }
-fn default_toxicity_timeout_ms() -> u64 { 100 }
+fn default_port() -> u16 {
+    8080
+}
+fn default_true() -> bool {
+    true
+}
+fn default_timeout_ms() -> u64 {
+    30_000
+}
+fn default_retry() -> u32 {
+    2
+}
+fn default_pool_max_idle_per_host() -> usize {
+    25
+}
+fn default_tcp_keepalive_secs() -> u64 {
+    30
+}
+fn default_openai_base() -> String {
+    "https://api.openai.com".to_string()
+}
+fn default_pii_patterns() -> Vec<String> {
+    vec![
+        "credit_card".into(),
+        "ssn".into(),
+        "email".into(),
+        "phone".into(),
+    ]
+}
+fn default_policy_format() -> String {
+    "cedar".to_string()
+}
+fn default_policy_dir() -> String {
+    "./dsl/policies".to_string()
+}
+fn default_buffer_size_bytes() -> usize {
+    512
+}
+fn default_buffer_timeout_ms() -> u64 {
+    200
+}
+fn default_audit_backend() -> String {
+    "stdout".to_string()
+}
+fn default_audit_path() -> String {
+    "./audit.jsonl".to_string()
+}
+fn default_max_size_mb() -> u64 {
+    100
+}
+fn default_max_holds() -> usize {
+    100
+}
+fn default_hold_timeout() -> u64 {
+    30
+}
+fn default_retain_payloads() -> String {
+    "masked".to_string()
+}
+fn default_retain_on() -> String {
+    "on_enforcement".to_string()
+}
+fn default_max_payload_bytes() -> usize {
+    32_768
+}
+fn default_retention_days() -> u64 {
+    90
+}
+fn default_perf_retention_days() -> u64 {
+    30
+}
+fn default_perf_buffer() -> usize {
+    1000
+}
+fn default_flush_interval() -> f64 {
+    5.0
+}
+fn default_toxicity_timeout_ms() -> u64 {
+    100
+}
 
 /// Default token costs for top 10 models (as of 2026-04).
 /// Update monthly — model pricing changes without notice.
 fn default_token_costs() -> HashMap<String, ModelCostConfig> {
     [
         // OpenAI
-        ("gpt-4o", ModelCostConfig { prompt_per_1k: 0.0025, completion_per_1k: 0.01 }),
-        ("gpt-4o-mini", ModelCostConfig { prompt_per_1k: 0.00015, completion_per_1k: 0.0006 }),
-        ("gpt-4.1", ModelCostConfig { prompt_per_1k: 0.002, completion_per_1k: 0.008 }),
-        ("gpt-4.1-mini", ModelCostConfig { prompt_per_1k: 0.0004, completion_per_1k: 0.0016 }),
-        ("gpt-4.1-nano", ModelCostConfig { prompt_per_1k: 0.0001, completion_per_1k: 0.0004 }),
-        ("o3-mini", ModelCostConfig { prompt_per_1k: 0.0011, completion_per_1k: 0.0044 }),
+        (
+            "gpt-4o",
+            ModelCostConfig {
+                prompt_per_1k: 0.0025,
+                completion_per_1k: 0.01,
+            },
+        ),
+        (
+            "gpt-4o-mini",
+            ModelCostConfig {
+                prompt_per_1k: 0.00015,
+                completion_per_1k: 0.0006,
+            },
+        ),
+        (
+            "gpt-4.1",
+            ModelCostConfig {
+                prompt_per_1k: 0.002,
+                completion_per_1k: 0.008,
+            },
+        ),
+        (
+            "gpt-4.1-mini",
+            ModelCostConfig {
+                prompt_per_1k: 0.0004,
+                completion_per_1k: 0.0016,
+            },
+        ),
+        (
+            "gpt-4.1-nano",
+            ModelCostConfig {
+                prompt_per_1k: 0.0001,
+                completion_per_1k: 0.0004,
+            },
+        ),
+        (
+            "o3-mini",
+            ModelCostConfig {
+                prompt_per_1k: 0.0011,
+                completion_per_1k: 0.0044,
+            },
+        ),
         // Anthropic
-        ("claude-opus-4-6", ModelCostConfig { prompt_per_1k: 0.015, completion_per_1k: 0.075 }),
-        ("claude-sonnet-4-6", ModelCostConfig { prompt_per_1k: 0.003, completion_per_1k: 0.015 }),
-        ("claude-haiku-4-5-20251001", ModelCostConfig { prompt_per_1k: 0.0008, completion_per_1k: 0.004 }),
+        (
+            "claude-opus-4-6",
+            ModelCostConfig {
+                prompt_per_1k: 0.015,
+                completion_per_1k: 0.075,
+            },
+        ),
+        (
+            "claude-sonnet-4-6",
+            ModelCostConfig {
+                prompt_per_1k: 0.003,
+                completion_per_1k: 0.015,
+            },
+        ),
+        (
+            "claude-haiku-4-5-20251001",
+            ModelCostConfig {
+                prompt_per_1k: 0.0008,
+                completion_per_1k: 0.004,
+            },
+        ),
         // Google
-        ("gemini-2.5-pro", ModelCostConfig { prompt_per_1k: 0.00125, completion_per_1k: 0.01 }),
+        (
+            "gemini-2.5-pro",
+            ModelCostConfig {
+                prompt_per_1k: 0.00125,
+                completion_per_1k: 0.01,
+            },
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
     .collect()
+}
+
+// ── Loader ───────────────────────────────────────────────────────────────────
+
+pub fn load(path: &str) -> anyhow::Result<SteerConfig> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read config file: {path}"))?;
+    let expanded = expand_env_vars(&content);
+    let config: SteerConfig = serde_yaml::from_str(&expanded)
+        .with_context(|| format!("cannot parse config file: {path}"))?;
+    Ok(config)
+}
+
+fn expand_env_vars(s: &str) -> String {
+    let mut result = s.to_string();
+    // Match ${VAR} and ${VAR:-default}
+    let re = regex::Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)(?::-(.*?))?\}").unwrap();
+    let owned = result.clone();
+    for cap in re.captures_iter(&owned) {
+        let var = &cap[1];
+        let default = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        let val = std::env::var(var)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| default.to_string());
+        result = result.replace(&cap[0], &val);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -518,7 +728,10 @@ pii:
         let config = load(f.path().to_str().unwrap()).unwrap();
         // Serde defaults should be applied during deserialization
         assert_eq!(config.policy.format, "cedar");
-        assert!(!config.token_costs.is_empty(), "default token costs must be present");
+        assert!(
+            !config.token_costs.is_empty(),
+            "default token costs must be present"
+        );
         assert!(config.pii.enabled, "pii.enabled should be true when set");
     }
 
@@ -572,9 +785,18 @@ upstream:
     #[test]
     fn default_token_costs_contains_expected_models() {
         let costs: HashMap<String, ModelCostConfig> = super::default_token_costs();
-        assert!(costs.contains_key("gpt-4o"), "gpt-4o must be in default costs");
-        assert!(costs.contains_key("claude-sonnet-4-6"), "claude-sonnet-4-6 must be in default costs");
-        assert!(costs.contains_key("gemini-2.5-pro"), "gemini-2.5-pro must be in default costs");
+        assert!(
+            costs.contains_key("gpt-4o"),
+            "gpt-4o must be in default costs"
+        );
+        assert!(
+            costs.contains_key("claude-sonnet-4-6"),
+            "claude-sonnet-4-6 must be in default costs"
+        );
+        assert!(
+            costs.contains_key("gemini-2.5-pro"),
+            "gemini-2.5-pro must be in default costs"
+        );
     }
 
     #[test]
@@ -598,7 +820,10 @@ model: gpt-4o-mini
     fn detectors_config_serde_default_timeout() {
         // When DetectorsConfig is deserialized without the field, serde applies default_toxicity_timeout_ms=100
         let cfg: DetectorsConfig = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(cfg.toxicity_sidecar_timeout_ms, 100, "default timeout must be 100ms");
+        assert_eq!(
+            cfg.toxicity_sidecar_timeout_ms, 100,
+            "default timeout must be 100ms"
+        );
         assert!(cfg.toxicity_sidecar_url.is_none());
     }
 
@@ -620,7 +845,9 @@ approved_servers:
         let cfg: McpAllowlistConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(cfg.enabled);
         assert_eq!(cfg.approved_servers.len(), 2);
-        assert!(cfg.approved_servers.contains(&"github-mcp-server".to_string()));
+        assert!(cfg
+            .approved_servers
+            .contains(&"github-mcp-server".to_string()));
     }
 
     #[test]
@@ -643,32 +870,4 @@ mcp_allowlist:
         assert!(config.mcp_allowlist.enabled);
         assert_eq!(config.mcp_allowlist.approved_servers.len(), 2);
     }
-}
-
-// ── Loader ───────────────────────────────────────────────────────────────────
-
-pub fn load(path: &str) -> anyhow::Result<SteerConfig> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read config file: {path}"))?;
-    let expanded = expand_env_vars(&content);
-    let config: SteerConfig = serde_yaml::from_str(&expanded)
-        .with_context(|| format!("cannot parse config file: {path}"))?;
-    Ok(config)
-}
-
-fn expand_env_vars(s: &str) -> String {
-    let mut result = s.to_string();
-    // Match ${VAR} and ${VAR:-default}
-    let re = regex::Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)(?::-(.*?))?\}").unwrap();
-    let owned = result.clone();
-    for cap in re.captures_iter(&owned) {
-        let var = &cap[1];
-        let default = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-        let val = std::env::var(var)
-            .ok()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| default.to_string());
-        result = result.replace(&cap[0], &val);
-    }
-    result
 }

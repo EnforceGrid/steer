@@ -1,11 +1,13 @@
+use crate::streaming::parsers::{SseFrame, StreamParser};
 use bytes::Bytes;
 use serde_json::{json, Value};
-use crate::streaming::parsers::{SseFrame, StreamParser};
 
 pub struct OpenAiParser;
 
 impl StreamParser for OpenAiParser {
-    fn provider(&self) -> &str { "openai" }
+    fn provider(&self) -> &str {
+        "openai"
+    }
 
     fn parse_frame(&self, raw: &[u8]) -> Vec<SseFrame> {
         let text = match std::str::from_utf8(raw) {
@@ -16,12 +18,15 @@ impl StreamParser for OpenAiParser {
         let mut frames = vec![];
         for line in text.split('\n') {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             if let Some(data) = line.strip_prefix("data: ") {
                 let is_done = data.trim() == "[DONE]";
-                let is_error = !is_done && serde_json::from_str::<Value>(data)
-                    .map(|v| v.get("error").is_some())
-                    .unwrap_or(false);
+                let is_error = !is_done
+                    && serde_json::from_str::<Value>(data)
+                        .map(|v| v.get("error").is_some())
+                        .unwrap_or(false);
                 frames.push(SseFrame {
                     event: None,
                     data: data.to_string(),
@@ -63,6 +68,13 @@ impl StreamParser for OpenAiParser {
         });
         Bytes::from(format!("data: {}\n\ndata: [DONE]\n\n", payload))
     }
+
+    fn encode_text_delta(&self, text: &str) -> Bytes {
+        let payload = json!({
+            "choices": [{"delta": {"content": text}, "finish_reason": null, "index": 0}]
+        });
+        Bytes::from(format!("data: {}\n\n", payload))
+    }
 }
 
 #[cfg(test)]
@@ -70,7 +82,9 @@ mod tests {
     use super::*;
     use crate::streaming::parsers::StreamParser;
 
-    fn parser() -> OpenAiParser { OpenAiParser }
+    fn parser() -> OpenAiParser {
+        OpenAiParser
+    }
 
     #[test]
     fn parse_frame_extracts_data_line() {
@@ -164,7 +178,11 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert!(!frames[0].is_done);
         assert!(!frames[0].is_error);
-        assert!(frames[0].data.contains("hello"), "Content should be 'hello', got: {}", frames[0].data);
+        assert!(
+            frames[0].data.contains("hello"),
+            "Content should be 'hello', got: {}",
+            frames[0].data
+        );
     }
 
     #[test]
@@ -182,7 +200,7 @@ mod tests {
         // After chunk 1: first event is complete
         sse_buf.extend_from_slice(chunk1);
         let events = extract_complete_sse_events(&mut sse_buf);
-        assert!(events.len() >= 1, "First event should be complete");
+        assert!(!events.is_empty(), "First event should be complete");
 
         // Parse first event
         let frames1 = parser().parse_frame(&events[0]);
@@ -232,8 +250,8 @@ mod tests {
         assert!(!frames[0].is_error);
 
         // Verify tool call id and name are extractable from the parsed data
-        let parsed: serde_json::Value = serde_json::from_str(&frames[0].data)
-            .expect("Should parse as valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&frames[0].data).expect("Should parse as valid JSON");
         let tool_call = &parsed["choices"][0]["delta"]["tool_calls"][0];
         assert_eq!(tool_call["id"].as_str().unwrap(), "call_ABC");
         assert_eq!(tool_call["function"]["name"].as_str().unwrap(), "my_tool");
@@ -245,9 +263,19 @@ mod tests {
         // Two complete events in a single chunk — regression test
         let raw = b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n";
         let frames = parser().parse_frame(raw);
-        assert_eq!(frames.len(), 2, "Two complete events should produce two frames");
-        assert!(frames[0].data.contains("\"a\""), "First frame should contain 'a'");
-        assert!(frames[1].data.contains("\"b\""), "Second frame should contain 'b'");
+        assert_eq!(
+            frames.len(),
+            2,
+            "Two complete events should produce two frames"
+        );
+        assert!(
+            frames[0].data.contains("\"a\""),
+            "First frame should contain 'a'"
+        );
+        assert!(
+            frames[1].data.contains("\"b\""),
+            "Second frame should contain 'b'"
+        );
         assert!(!frames[0].is_done);
         assert!(!frames[1].is_done);
     }
@@ -263,7 +291,10 @@ mod tests {
 
         let mut sse_buf: Vec<u8> = Vec::new();
         sse_buf.extend_from_slice(chunk1);
-        assert!(extract_complete_sse_events(&mut sse_buf).is_empty(), "Partial event stays buffered");
+        assert!(
+            extract_complete_sse_events(&mut sse_buf).is_empty(),
+            "Partial event stays buffered"
+        );
 
         sse_buf.extend_from_slice(chunk2);
         let events = extract_complete_sse_events(&mut sse_buf);
@@ -277,7 +308,10 @@ mod tests {
         let args = parsed["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
             .as_str()
             .unwrap();
-        assert_eq!(args, "\"Musk\"", "Full argument must be preserved, got: {args}");
+        assert_eq!(
+            args, "\"Musk\"",
+            "Full argument must be preserved, got: {args}"
+        );
     }
 
     /// Regression test: enforce path must use encode_frame (not frame.raw)
@@ -286,7 +320,8 @@ mod tests {
     /// malformed SSE that downstream parsers cannot split into discrete events.
     #[test]
     fn enforce_path_finish_reason_tool_calls_has_sse_terminator() {
-        let raw_input = b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n";
+        let raw_input =
+            b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n";
         let frames = parser().parse_frame(raw_input);
         assert_eq!(frames.len(), 1, "Should parse one frame");
 
@@ -314,14 +349,85 @@ mod tests {
         );
 
         // Verify the finish_reason payload survives the round-trip
-        let reparsed: serde_json::Value = serde_json::from_str(
-            encoded_str.trim().strip_prefix("data: ").unwrap()
-        ).expect("Encoded frame data must be valid JSON");
+        let reparsed: serde_json::Value =
+            serde_json::from_str(encoded_str.trim().strip_prefix("data: ").unwrap())
+                .expect("Encoded frame data must be valid JSON");
         assert_eq!(
             reparsed["choices"][0]["finish_reason"].as_str().unwrap(),
             "tool_calls",
             "finish_reason must survive encode_frame round-trip"
         );
+    }
+
+    // ─── encode_text_delta tests ─────────────────────────────────────────────
+
+    #[test]
+    fn encode_text_delta_produces_valid_sse_frame() {
+        let encoded = parser().encode_text_delta("hello world");
+        let text = std::str::from_utf8(&encoded).unwrap();
+        assert!(
+            text.starts_with("data: "),
+            "must start with SSE data prefix"
+        );
+        assert!(text.ends_with("\n\n"), "must end with SSE event terminator");
+    }
+
+    #[test]
+    fn encode_text_delta_content_round_trips() {
+        let encoded = parser().encode_text_delta("hello world");
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        assert!(!frames[0].is_done);
+        assert!(!frames[0].is_error);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        let text = v["choices"][0]["delta"]["content"].as_str().unwrap();
+        assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn encode_text_delta_empty_string() {
+        let encoded = parser().encode_text_delta("");
+        let text = std::str::from_utf8(&encoded).unwrap();
+        assert!(
+            text.ends_with("\n\n"),
+            "empty delta must still be valid SSE"
+        );
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+    }
+
+    #[test]
+    fn encode_text_delta_pii_redacted_text_round_trips() {
+        let redacted = "contact [REDACTED_EMAIL] for help";
+        let encoded = parser().encode_text_delta(redacted);
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        let text = v["choices"][0]["delta"]["content"].as_str().unwrap();
+        assert_eq!(text, redacted);
+    }
+
+    #[test]
+    fn encode_text_delta_finish_reason_is_null() {
+        let encoded = parser().encode_text_delta("some text");
+        let frames = parser().parse_frame(&encoded);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        assert!(
+            v["choices"][0]["finish_reason"].is_null(),
+            "encode_text_delta must produce null finish_reason, got: {:?}",
+            v
+        );
+    }
+
+    #[test]
+    fn encode_text_delta_special_chars_json_escaped() {
+        let text = r#"say "hello" \ world"#;
+        let encoded = parser().encode_text_delta(text);
+        let frames = parser().parse_frame(&encoded);
+        assert_eq!(frames.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&frames[0].data).unwrap();
+        let recovered = v["choices"][0]["delta"]["content"].as_str().unwrap();
+        assert_eq!(recovered, text);
     }
 
     #[test]

@@ -26,20 +26,29 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use tracing::{info, warn};
 
-use crate::policy::cedar::CedarEngine;
+use crate::policy::cedar::{rewrite_enforcement_annotations, CedarEngine};
+use crate::tenants::TenantSettingsProvider;
 
 /// Trait abstracting the SQLite-backed TenantPolicyConfigStore so steer-core
 /// doesn't depend on rusqlite. Implemented by steer-ee's TenantPolicyConfigStore.
 pub trait PolicyRegistryBackend: Send + Sync {
-    fn get_tenant_config(&self, tenant_id: &str) -> Result<crate::tenants::policy_config::TenantPolicyConfig>;
-    fn get_managed_version(&self, version: &str) -> Result<Option<crate::tenants::policy_config::ManagedPolicyVersion>>;
+    fn get_tenant_config(
+        &self,
+        tenant_id: &str,
+    ) -> Result<crate::tenants::policy_config::TenantPolicyConfig>;
+    fn get_managed_version(
+        &self,
+        version: &str,
+    ) -> Result<Option<crate::tenants::policy_config::ManagedPolicyVersion>>;
     fn tenants_with_auto_upgrade(&self) -> Result<Vec<String>>;
     fn upgrade_tenant_version(&self, tenant_id: &str, version: &str) -> Result<()>;
     fn managed_policy_count_for_version(&self, version: &str) -> usize;
 }
 
 /// Domain types re-exported so downstream code doesn't need to import from policy_config.
-pub use crate::tenants::policy_config::{TenantPolicyConfig, ManagedPolicyVersion, CURRENT_MANAGED_VERSION};
+pub use crate::tenants::policy_config::{
+    ManagedPolicyVersion, TenantPolicyConfig, CURRENT_MANAGED_VERSION,
+};
 
 pub struct TenantPolicyRegistry {
     /// Live Cedar engines, keyed by tenant_id. Populated lazily.
@@ -47,6 +56,11 @@ pub struct TenantPolicyRegistry {
     config_store: Arc<dyn PolicyRegistryBackend>,
     /// Base directory for per-tenant policy files: `{policy_dir}/{tenant_id}/*.cedar`
     policy_dir: String,
+    /// Optional tenant settings provider. When set, `load_engine_for` consults
+    /// `TenantSettings.observation_mode` and rewrites `@enforcement("block"|"steer")`
+    /// to `@enforcement("flag")` in the combined cedar text before engine creation.
+    /// Left as `None` in callsites that don't surface observation mode (e.g. tests).
+    settings_provider: Option<Arc<dyn TenantSettingsProvider>>,
 }
 
 impl TenantPolicyRegistry {
@@ -55,7 +69,16 @@ impl TenantPolicyRegistry {
             engines: DashMap::new(),
             config_store,
             policy_dir: policy_dir.to_string(),
+            settings_provider: None,
         }
+    }
+
+    /// Attach a tenant settings provider so observation-mode rewriting can fire
+    /// on policy load. Additive — callers that don't need observation mode can
+    /// skip this. EE wires the DB-backed provider; OSS wires `SingleTenantSettings`.
+    pub fn with_settings_provider(mut self, provider: Arc<dyn TenantSettingsProvider>) -> Self {
+        self.settings_provider = Some(provider);
+        self
     }
 
     /// Get (or lazily load) the Cedar engine for a tenant.
@@ -73,7 +96,8 @@ impl TenantPolicyRegistry {
             });
 
         let swap = Arc::new(ArcSwap::new(Arc::new(engine)));
-        self.engines.insert(tenant_id.to_string(), Arc::clone(&swap));
+        self.engines
+            .insert(tenant_id.to_string(), Arc::clone(&swap));
         swap.load_full()
     }
 
@@ -83,8 +107,10 @@ impl TenantPolicyRegistry {
         if let Some(swap) = self.engines.get(tenant_id) {
             swap.store(Arc::new(engine));
         } else {
-            self.engines.insert(tenant_id.to_string(),
-                Arc::new(ArcSwap::new(Arc::new(engine))));
+            self.engines.insert(
+                tenant_id.to_string(),
+                Arc::new(ArcSwap::new(Arc::new(engine))),
+            );
         }
         info!(tenant_id, "tenant policy engine reloaded");
         Ok(())
@@ -103,12 +129,16 @@ impl TenantPolicyRegistry {
         let auto_tenants = self.config_store.tenants_with_auto_upgrade()?;
         let mut count = 0;
         for tenant_id in &auto_tenants {
-            self.config_store.upgrade_tenant_version(tenant_id, new_version)?;
+            self.config_store
+                .upgrade_tenant_version(tenant_id, new_version)?;
             self.evict(tenant_id);
             count += 1;
         }
         if count > 0 {
-            info!(version = new_version, count, "auto-upgraded tenants to new managed version");
+            info!(
+                version = new_version,
+                count, "auto-upgraded tenants to new managed version"
+            );
         }
         Ok(count)
     }
@@ -117,14 +147,17 @@ impl TenantPolicyRegistry {
     /// Used by the capabilities endpoint so the frontend can display the
     /// managed policy count without a per-tenant directory lookup.
     pub fn managed_policy_count(&self) -> usize {
-        self.config_store.managed_policy_count_for_version(CURRENT_MANAGED_VERSION)
+        self.config_store
+            .managed_policy_count_for_version(CURRENT_MANAGED_VERSION)
     }
 
     // ── Internal ──────────────────────────────────────────────────────────
 
     fn load_engine_for(&self, tenant_id: &str) -> Result<CedarEngine> {
         let config = self.config_store.get_tenant_config(tenant_id)?;
-        let managed = self.config_store.get_managed_version(&config.managed_version)?;
+        let managed = self
+            .config_store
+            .get_managed_version(&config.managed_version)?;
 
         let mut combined = match managed {
             Some(v) => v.content,
@@ -154,7 +187,20 @@ impl TenantPolicyRegistry {
             return Ok(CedarEngine::permissive());
         }
 
-        CedarEngine::from_policy_str(&combined).map_err(|e| anyhow::anyhow!("{e:?}"))
+        // Observation-mode rewriting. Looks up tenant settings if a provider
+        // is attached; if `observation_mode` is true, downgrades every
+        // `@enforcement("block")` and `@enforcement("steer")` annotation to
+        // `@enforcement("flag")` so decisions surface as observation events
+        // without blocking traffic.
+        let final_text = match self.settings_provider.as_ref() {
+            Some(p) if p.get_settings(tenant_id).observation_mode => {
+                info!(tenant_id, "loading policies in observation mode");
+                rewrite_enforcement_annotations(&combined, "observation")
+            }
+            _ => combined,
+        };
+
+        CedarEngine::from_policy_str(&final_text).map_err(|e| anyhow::anyhow!("{e:?}"))
     }
 }
 

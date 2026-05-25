@@ -21,15 +21,16 @@ pub fn resolve_auth_for_provider(
     configured_api_key: &str,
     provider_name: Option<&str>,
 ) -> Result<(), String> {
-    let is_anthropic = provider_name
-        .is_some_and(|p| p.eq_ignore_ascii_case("anthropic"));
+    let is_anthropic = provider_name.is_some_and(|p| p.eq_ignore_ascii_case("anthropic"));
 
     // Check if the caller already sent valid auth
-    let has_auth = headers.get("authorization")
+    let has_auth = headers
+        .get("authorization")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .is_some();
-    let has_x_api_key = headers.get("x-api-key")
+    let has_x_api_key = headers
+        .get("x-api-key")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .is_some();
@@ -44,7 +45,10 @@ pub fn resolve_auth_for_provider(
         } else {
             // Non-Anthropic: only inject if no auth already present
             if !has_auth {
-                headers.insert("authorization".to_string(), format!("Bearer {configured_api_key}"));
+                headers.insert(
+                    "authorization".to_string(),
+                    format!("Bearer {configured_api_key}"),
+                );
             }
         }
         return Ok(());
@@ -65,10 +69,16 @@ mod tests {
     #[test]
     fn resolve_auth_uses_existing_authorization() {
         let mut headers = HashMap::new();
-        headers.insert("authorization".to_string(), "Bearer existing-token".to_string());
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer existing-token".to_string(),
+        );
         let result = resolve_auth(&mut headers, "configured-key");
         assert!(result.is_ok());
-        assert_eq!(headers.get("authorization").unwrap(), "Bearer existing-token");
+        assert_eq!(
+            headers.get("authorization").unwrap(),
+            "Bearer existing-token"
+        );
     }
 
     #[test]
@@ -76,7 +86,10 @@ mod tests {
         let mut headers = HashMap::new();
         let result = resolve_auth(&mut headers, "configured-key");
         assert!(result.is_ok());
-        assert_eq!(headers.get("authorization").unwrap(), "Bearer configured-key");
+        assert_eq!(
+            headers.get("authorization").unwrap(),
+            "Bearer configured-key"
+        );
     }
 
     #[test]
@@ -111,7 +124,10 @@ mod tests {
         // x-api-key — the caller may have sent a Steer auth key (eg_sk_live_...) rather
         // than a real Anthropic key, so we must not forward it blindly.
         let mut headers = HashMap::new();
-        headers.insert("x-api-key".to_string(), "eg_sk_live_caller-steer-key".to_string());
+        headers.insert(
+            "x-api-key".to_string(),
+            "eg_sk_live_caller-steer-key".to_string(),
+        );
         let result = resolve_auth_for_provider(&mut headers, "sk-ant-upstream", Some("anthropic"));
         assert!(result.is_ok());
         assert_eq!(headers.get("x-api-key").unwrap(), "sk-ant-upstream");
@@ -122,10 +138,16 @@ mod tests {
         // No configured upstream key → caller's real Anthropic key passes through unchanged.
         // This is the local cargo-run case: ANTHROPIC_BASE_URL=http://localhost:3000.
         let mut headers = HashMap::new();
-        headers.insert("x-api-key".to_string(), "sk-ant-real-anthropic-key".to_string());
+        headers.insert(
+            "x-api-key".to_string(),
+            "sk-ant-real-anthropic-key".to_string(),
+        );
         let result = resolve_auth_for_provider(&mut headers, "", Some("anthropic"));
         assert!(result.is_ok());
-        assert_eq!(headers.get("x-api-key").unwrap(), "sk-ant-real-anthropic-key");
+        assert_eq!(
+            headers.get("x-api-key").unwrap(),
+            "sk-ant-real-anthropic-key"
+        );
     }
 
     #[test]

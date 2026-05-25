@@ -1,7 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use axum::Json;
 use serde_json::json;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 static REQUEST_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAST_REQUEST_AT: AtomicU64 = AtomicU64::new(0);
@@ -9,14 +9,20 @@ static STARTED_AT: AtomicU64 = AtomicU64::new(0);
 
 /// Call once at startup to record boot time.
 pub fn init() {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     STARTED_AT.store(now, Ordering::Relaxed);
 }
 
 /// Call after each proxied request to update counters.
 pub fn record_request() {
     REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     LAST_REQUEST_AT.store(now, Ordering::Relaxed);
 }
 
@@ -24,7 +30,10 @@ pub async fn health() -> Json<serde_json::Value> {
     let count = REQUEST_COUNT.load(Ordering::Relaxed);
     let last_at = LAST_REQUEST_AT.load(Ordering::Relaxed);
     let started = STARTED_AT.load(Ordering::Relaxed);
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let uptime_s = now.saturating_sub(started);
 
     let mut resp = json!({

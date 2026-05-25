@@ -1,8 +1,8 @@
 # Build
-/target/
+target/
 
-# Libraries don't pin dependencies — don't commit lock file
-Cargo.lock
+# Cargo.lock is committed — Steer ships a binary, reproducible builds require it.
+# (For pure libraries you would skip this and not commit Cargo.lock.)
 
 # Local dev overrides
 .cargo/config.toml
@@ -13,7 +13,10 @@ Cargo.lock
 *.db-wal
 
 # Config with secrets
-steer.yaml
+/steer.yaml
+steer.yaml.bak
+test-audit.jsonl
+audit.jsonl
 
 # macOS
 .DS_Store
@@ -27,3 +30,4 @@ steer.yaml
 *.swp
 *.swo
 *~
+.hitl-policies/

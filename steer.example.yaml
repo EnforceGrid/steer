@@ -30,19 +30,57 @@ models:
     model: claude-haiku-4-5-20251001
 
 # ── PII detection ────────────────────────────────────────────────────────────
+# Defaults cover personal data and the credential shapes most likely to leak
+# from a developer prompt. To slim the list, comment out lines below.
+# Additional patterns available: phone_intl, ip_address, iban. See docs
+# for full registry.
+#
+# The shipped `default-secrets-block` policy in default.cedar enumerates the
+# secret pattern names below to BLOCK on. If you remove an `*_key`, `*_token`,
+# `jwt`, or `bearer_token` entry here, the corresponding pattern won't be
+# scanned and the policy can't block it — keep them enabled unless you
+# explicitly fork the policy too.
 pii:
   enabled: true
   patterns:
+    # Personal data — `default-pii-flag` logs these but does not block
     - credit_card
     - ssn
     - email
     - phone
+    - phone_intl
+    - ip_address
+    - iban
+    # Auth secrets — `default-secrets-block` BLOCKS these by default
+    - anthropic_key
+    - openai_key
+    - github_token
+    - slack_token
+    - stripe_key
+    - aws_access_key
+    - aws_secret_key
+    - azure_key
+    - google_api_key
+    - jwt
+    - bearer_token
+    - generic_secret
 
 # ── Cedar policy enforcement ─────────────────────────────────────────────────
 policy:
   format: cedar
   policy_dir: "./dsl/policies"
-  watch: false   # set true to hot-reload .cedar files on change
+  watch: false           # set true to hot-reload .cedar files on change
+
+  # Enforcement mode. Default: enforce.
+  #   enforce — block requests/responses that trip a forbid policy.
+  #   observe — log every decision but never block. Use for the first
+  #             1-2 weeks of a production rollout to surface false
+  #             positives before flipping to enforce.
+  # Observation rewrites @enforcement("block"|"steer") -> @enforcement("flag")
+  # globally — no per-policy edits required. Audit entries carry
+  # `observed: true` for would-have-blocked events; filter with:
+  #   jq 'select(.enforcement.observed == true)' audit.jsonl
+  mode: enforce
 
 # ── Streaming ────────────────────────────────────────────────────────────────
 streaming:
@@ -52,10 +90,45 @@ streaming:
 
 # ── Audit ────────────────────────────────────────────────────────────────────
 audit:
-  backend: stdout    # stdout | file
-  log_path: "./audit.jsonl"
-  retain_payloads: masked   # never | masked | raw
+  backend: stdout              # stdout | file
+  log_path: "./audit.jsonl"    # honored when backend: file
+  retain_payloads: masked      # never | masked | raw
+  # Output format:
+  #   json    — single-line JSON per request (default; SIEM-friendly)
+  #   compact — one human line per request, e.g.
+  #             `[BLOCK] POST /v1/messages model=... rule=... matched=... latency=11.8ms`
+  #             (recommended for `docker logs -f` and developer terminals)
+  #   pretty  — multi-line indented JSON (ad-hoc inspection)
+  format: json
 
 # ── Handover (human-in-the-loop holds) ───────────────────────────────────────
 handover:
   enabled: false
+
+# ── Tenant settings (single-tenant OSS) ──────────────────────────────────────
+# These are exposed for the single tenant running this binary. Enterprise
+# (multi-tenant) reads them from a DB instead. Each flips a value in the
+# Cedar evaluation context — write policies that reference them to drive
+# behaviour off the values you set here.
+tenant:
+  # Lawful basis recorded for data processing (GDPR Art 6 / AIUC-1 E005).
+  # Surfaced as `context.consent_given`. The shipped baseline does NOT
+  # include a no-consent policy by default (it generated noise). To enforce:
+  # drop an override .cedar file at `<policy_dir>/default/consent.cedar` —
+  # see the header of default.cedar for the snippet.
+  consent_given: false
+
+  # Tenant industry classification. Surfaced as `context.org_industry`.
+  # Useful for industry-specific policies (e.g. healthcare PHI rules).
+  industry: "other"
+
+  # IANA timezone. Surfaced as `context.org_timezone`.
+  timezone: "UTC"
+
+  # Data residency region for AIUC-1 E004 cross-border checks. Surfaced
+  # as `context.org_region`. Empty = no residency requirement.
+  region: ""
+
+  # Business hours window, e.g. "Mon-Fri 09:00-17:00". Surfaced as
+  # `context.org_business_hours_active`. Empty = always active.
+  business_hours_window: ""

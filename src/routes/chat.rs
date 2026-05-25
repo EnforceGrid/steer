@@ -1,6 +1,6 @@
-use axum::{Extension, extract::Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::{extract::Request, Extension};
 use std::sync::Arc;
 
 use crate::middleware::TenantContext;
@@ -29,13 +29,11 @@ pub async fn chat_completions(
         parts.headers,
         body_bytes,
         override_tenant,
-    ).await
+    )
+    .await
 }
 
-pub async fn messages(
-    Extension(state): Extension<Arc<PipelineState>>,
-    req: Request,
-) -> Response {
+pub async fn messages(Extension(state): Extension<Arc<PipelineState>>, req: Request) -> Response {
     chat_completions(Extension(state), req).await
 }
 
@@ -53,11 +51,17 @@ pub async fn passthrough(
     let fwd = crate::headers::forward_headers(&parts.headers);
     let hmap = crate::pipeline::map_to_header_map(&fwd);
 
-    match state.http_client.get(&upstream_url).headers(hmap).send().await {
+    match state
+        .http_client
+        .get(&upstream_url)
+        .headers(hmap)
+        .send()
+        .await
+    {
         Ok(resp) => {
             let status = resp.status();
-            let axum_status = StatusCode::from_u16(status.as_u16())
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let axum_status =
+                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             let body = resp.bytes().await.unwrap_or_default();
             (axum_status, body).into_response()
         }

@@ -1,9 +1,9 @@
 pub mod patterns;
 
-use std::cmp::Reverse;
-use std::collections::HashSet;
 use regex::{Regex, RegexSet};
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PiiFinding {
@@ -50,10 +50,7 @@ impl RegexPiiEngine {
     }
 
     /// Extended constructor used when custom patterns are available from config.
-    pub fn with_custom(
-        enabled: &[String],
-        custom: &[crate::config::CustomPiiPattern],
-    ) -> Self {
+    pub fn with_custom(enabled: &[String], custom: &[crate::config::CustomPiiPattern]) -> Self {
         let enabled_set: HashSet<&str> = enabled.iter().map(|s| s.as_str()).collect();
 
         // Built-in patterns (static, pre-compiled via Lazy).
@@ -93,19 +90,28 @@ impl RegexPiiEngine {
         // Build a RegexSet from all compiled patterns for single-pass matching.
         // This lets scan_and_redact skip patterns that can't possibly match,
         // avoiding N individual regex passes on clean text.
-        let set_patterns: Vec<&str> = compiled.iter()
-            .map(|p| p.regex.as_str())
-            .collect();
-        let match_set = RegexSet::new(&set_patterns)
-            .unwrap_or_else(|_| RegexSet::empty());
+        let set_patterns: Vec<&str> = compiled.iter().map(|p| p.regex.as_str()).collect();
+        let match_set = RegexSet::new(&set_patterns).unwrap_or_else(|_| RegexSet::empty());
 
-        Self { compiled, match_set }
+        Self {
+            compiled,
+            match_set,
+        }
     }
 
     /// Fast boolean check — does the text contain any PII? No allocation.
     #[inline]
     pub fn has_pii(&self, text: &str) -> bool {
         self.match_set.is_match(text)
+    }
+
+    /// Names of every compiled PII pattern (built-ins + custom), in scan order.
+    ///
+    /// Used at startup to cross-check Cedar `containsAny([...])` expressions
+    /// against the active pattern set — if a policy references a name that
+    /// isn't compiled, the rule silently degrades. See main.rs startup check.
+    pub fn pattern_names(&self) -> Vec<&str> {
+        self.compiled.iter().map(|p| p.name.as_str()).collect()
     }
 
     /// Fast scan-only pass — returns findings without performing redaction.
@@ -145,7 +151,10 @@ impl RegexPiiEngine {
         // Micro fast-path: texts shorter than the shortest possible PII token
         // (e.g. "a@b.c" = 5 chars) can never match any pattern.
         if text.len() < 5 {
-            return PiiScanResult { redacted_text: text.to_string(), findings: vec![] };
+            return PiiScanResult {
+                redacted_text: text.to_string(),
+                findings: vec![],
+            };
         }
 
         // Fast path: single-pass RegexSet check tells us which patterns could
@@ -172,8 +181,14 @@ impl RegexPiiEngine {
                 let new_len = new_text.len();
                 let count = count_non_overlapping(new_text, &pat.redact_to)
                     - count_non_overlapping(&result, &pat.redact_to);
-                let count = if count > 0 { count } else {
-                    if old_len != new_len || result != *new_text { 1 } else { 0 }
+                let count = if count > 0 {
+                    count
+                } else {
+                    if old_len != new_len || result != *new_text {
+                        1
+                    } else {
+                        0
+                    }
                 };
                 if count > 0 {
                     findings.push(PiiFinding {
@@ -266,7 +281,9 @@ impl RegexPiiEngine {
 }
 
 fn count_non_overlapping(haystack: &str, needle: &str) -> usize {
-    if needle.is_empty() { return 0; }
+    if needle.is_empty() {
+        return 0;
+    }
     haystack.matches(needle).count()
 }
 
@@ -281,10 +298,7 @@ fn extract_json_string_values(text: &str, keys: &[&str]) -> Vec<(usize, usize)> 
 
     for key in keys {
         // Search for `"key":"` or `"key": "` patterns
-        let patterns = [
-            format!("\"{}\":\"", key),
-            format!("\"{}\": \"", key),
-        ];
+        let patterns = [format!("\"{}\":\"", key), format!("\"{}\": \"", key)];
 
         for pat in &patterns {
             let pat_bytes = pat.as_bytes();
@@ -425,7 +439,10 @@ mod tests {
         let engine = RegexPiiEngine::with_custom(&[], &custom);
         // The bad pattern is skipped; the good one still fires.
         let result = engine.scan_and_redact("has GOOD token here", "test");
-        assert!(!result.findings.is_empty(), "good_pattern should have fired");
+        assert!(
+            !result.findings.is_empty(),
+            "good_pattern should have fired"
+        );
         assert_eq!(result.findings[0].pattern, "good_pattern");
         // Bad pattern is excluded: it should NOT appear in findings.
         let bad_fired = result.findings.iter().any(|f| f.pattern == "bad_pattern");

@@ -50,16 +50,27 @@ pub fn resolve_route(model: Option<&str>, config: &SteerConfig) -> ResolvedRoute
 
 /// Replace the `"model"` field in a JSON body with `model`. Returns original bytes on parse failure.
 pub fn rewrite_model_in_body(body: &[u8], model: &str) -> Vec<u8> {
-    let Ok(text) = std::str::from_utf8(body) else { return body.to_vec(); };
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text) else { return body.to_vec(); };
+    let Ok(text) = std::str::from_utf8(body) else {
+        return body.to_vec();
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return body.to_vec();
+    };
     if let Some(obj) = value.as_object_mut() {
-        obj.insert("model".to_string(), serde_json::Value::String(model.to_string()));
+        obj.insert(
+            "model".to_string(),
+            serde_json::Value::String(model.to_string()),
+        );
     }
     serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
 }
 
 pub fn build_upstream_url(base_url: &str, path: &str, query: Option<&str>) -> String {
-    let mut url = format!("{}/{}", base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+    let mut url = format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
     if let Some(q) = query {
         if !q.is_empty() {
             url.push('?');
@@ -78,10 +89,13 @@ mod tests {
         let mut models = HashMap::new();
         let mut providers = HashMap::new();
 
-        providers.insert("openai".to_string(), crate::config::ProviderConfig {
-            base_url: "https://api.openai.com".to_string(),
-            api_key: "sk-openai-123".to_string(),
-        });
+        providers.insert(
+            "openai".to_string(),
+            crate::config::ProviderConfig {
+                base_url: "https://api.openai.com".to_string(),
+                api_key: "sk-openai-123".to_string(),
+            },
+        );
 
         models.insert(
             "gpt-4".to_string(),
@@ -113,6 +127,7 @@ mod tests {
             detectors: crate::config::DetectorsConfig::default(),
             auth: crate::config::OidcConfig::default(),
             mcp_allowlist: crate::config::McpAllowlistConfig::default(),
+            tenant: crate::config::TenantConfig::default(),
         }
     }
 
@@ -174,10 +189,13 @@ mod tests {
         // the route's api_key must be empty — NOT the upstream (OpenAI) key.
         // Sending an OpenAI key to Anthropic causes "invalid x-api-key".
         let mut config = mock_config();
-        config.providers.insert("anthropic".to_string(), crate::config::ProviderConfig {
-            base_url: "https://api.anthropic.com".to_string(),
-            api_key: String::new(), // not configured
-        });
+        config.providers.insert(
+            "anthropic".to_string(),
+            crate::config::ProviderConfig {
+                base_url: "https://api.anthropic.com".to_string(),
+                api_key: String::new(), // not configured
+            },
+        );
         config.models.insert(
             "claude-sonnet-4-6".to_string(),
             crate::config::ModelRouteConfig {
@@ -190,7 +208,10 @@ mod tests {
         let route = resolve_route(Some("claude-sonnet-4-6"), &config);
         assert_eq!(route.base_url, "https://api.anthropic.com");
         // Must be empty — NOT "sk-fallback-456" (the upstream/OpenAI key)
-        assert_eq!(route.api_key, "", "provider key must not fall back to upstream key");
+        assert_eq!(
+            route.api_key, "",
+            "provider key must not fall back to upstream key"
+        );
         assert_eq!(route.provider_name, Some("anthropic".to_string()));
     }
 }

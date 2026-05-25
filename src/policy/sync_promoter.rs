@@ -29,8 +29,7 @@ impl SyncRequirements {
         let mut pii_sync = false;
         let mut has_response_enforcement = false;
 
-        let context_re =
-            Regex::new(r"context\.(\w+(?:\.\w+)*)").expect("valid regex");
+        let context_re = Regex::new(r"context\.(\w+(?:\.\w+)*)").expect("valid regex");
 
         for block in PolicyBlockIter::new(cedar_policy) {
             if !block.is_enforcing() {
@@ -296,17 +295,46 @@ mod tests {
         let req = SyncRequirements::analyze(cedar);
 
         // v2 observation mode: injection, jailbreak, confidential are now flag-only
-        assert!(!req.needs_sync("injection"), "injection should NOT be sync (flag only in v2)");
-        assert!(!req.needs_sync("jailbreak"), "jailbreak should NOT be sync (flag only in v2)");
-        assert!(!req.needs_sync("confidential"), "confidential should NOT be sync (flag only in v2)");
+        assert!(
+            !req.needs_sync("injection"),
+            "injection should NOT be sync (flag only in v2)"
+        );
+        assert!(
+            !req.needs_sync("jailbreak"),
+            "jailbreak should NOT be sync (flag only in v2)"
+        );
+        assert!(
+            !req.needs_sync("confidential"),
+            "confidential should NOT be sync (flag only in v2)"
+        );
         // exfiltration block policies remain
-        assert!(req.needs_sync("exfiltration"), "exfiltration should be sync");
-        assert!(!req.needs_sync("pii"), "pii should NOT be sync (flag only)");
-        assert!(!req.needs_sync("threat"), "threat should NOT be sync (flag only)");
-        assert!(!req.needs_sync("identity_claim"), "identity_claim should NOT be sync (flag only)");
+        assert!(
+            req.needs_sync("exfiltration"),
+            "exfiltration should be sync"
+        );
+        // PII is now sync because `default-secrets-block` is a block-action
+        // policy that references `context.pii_findings`. Without sync PII,
+        // auth secrets would be forwarded upstream unredacted before the
+        // hot-path block decision could fire. See `default-secrets-block`
+        // in default.cedar.
+        assert!(
+            req.needs_sync("pii"),
+            "pii must be sync — default-secrets-block needs hot-path findings"
+        );
+        assert!(
+            req.pii_sync,
+            "pii_sync flag must mirror needs_sync(\"pii\")"
+        );
+        assert!(
+            !req.needs_sync("threat"),
+            "threat should NOT be sync (flag only)"
+        );
+        assert!(
+            !req.needs_sync("identity_claim"),
+            "identity_claim should NOT be sync (flag only)"
+        );
 
         assert!(!req.all_async());
-        assert!(!req.pii_sync);
         assert!(req.has_response_enforcement);
     }
 
@@ -420,6 +448,28 @@ mod tests {
     }
 
     #[test]
+    fn pii_findings_set_reference_promotes_to_sync() {
+        // `context.pii_findings.containsAny([...])` must also promote PII to
+        // sync. Without this, the secrets-block policy would never run in the
+        // hot path and credentials would be forwarded upstream unredacted —
+        // the original v0.1.0-rc2 bug that drove the pii_findings plumbing.
+        let cedar = r#"
+            @enforcement("block")
+            forbid(principal, action, resource)
+            when {
+              context.pii_findings.containsAny(["openai_key", "anthropic_key"])
+            };
+        "#;
+        let req = SyncRequirements::analyze(cedar);
+
+        assert!(
+            req.pii_sync,
+            "pii_findings reference must promote PII to sync"
+        );
+        assert!(req.needs_sync("pii"));
+    }
+
+    #[test]
     fn steer_enforcement_promotes() {
         let cedar = r#"
             @enforcement("steer")
@@ -454,7 +504,9 @@ mod tests {
         let req = SyncRequirements::analyze(cedar);
 
         assert!(req.needs_sync("injection"));
-        assert!(req.enforced_facts.contains("agent_integrity.injection_detected"));
+        assert!(req
+            .enforced_facts
+            .contains("agent_integrity.injection_detected"));
     }
 
     #[test]
@@ -500,11 +552,23 @@ mod tests {
         assert_eq!(detector_for_fact("injection_detected"), Some("injection"));
         assert_eq!(detector_for_fact("jailbreak_detected"), Some("jailbreak"));
         assert_eq!(detector_for_fact("pii_detected"), Some("pii"));
-        assert_eq!(detector_for_fact("exfiltration_detected"), Some("exfiltration"));
-        assert_eq!(detector_for_fact("confidential_detected"), Some("confidential"));
+        assert_eq!(
+            detector_for_fact("exfiltration_detected"),
+            Some("exfiltration")
+        );
+        assert_eq!(
+            detector_for_fact("confidential_detected"),
+            Some("confidential")
+        );
         assert_eq!(detector_for_fact("threat_detected"), Some("threat"));
-        assert_eq!(detector_for_fact("identity_claim_detected"), Some("identity_claim"));
-        assert_eq!(detector_for_fact("unauthorized_tool_detected"), Some("tool_governance"));
+        assert_eq!(
+            detector_for_fact("identity_claim_detected"),
+            Some("identity_claim")
+        );
+        assert_eq!(
+            detector_for_fact("unauthorized_tool_detected"),
+            Some("tool_governance")
+        );
         assert_eq!(detector_for_fact("budget_remaining_cents"), None);
         assert_eq!(detector_for_fact("risk_level"), None);
     }

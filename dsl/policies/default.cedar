@@ -13,16 +13,63 @@ permit(principal, action, resource);
 // FLAG policies — log for review, don't block
 // ═══════════════════════════════════════════════════════════════════════════
 
-// F1: Flag PII detected in prompts (log mode — upgrade to block when ready)
+// F1: Flag PII detected in prompts (broad personal data — flag for review).
 // AIUC1_E006: PII detection audit events generate the evidence record that
 //             supports data subject right of access and erasure queries.
+//
+// Targets common personal-data shapes that often appear in legitimate prompts
+// (customer support, medical context, etc.). For high-confidence auth secrets
+// see `default-secrets-block` below — that one BLOCKS rather than flags.
 @id("default-pii-flag")
 @category("data_protection")
 @regulatory_mapping("AIUC1_E001, AIUC1_B005, AIUC1_E006, GDPR_ART_5, GDPR_ART_25, EU_AI_ACT_ART_12, EU_AI_ACT_ART_26, CO_SB205_S6, CCPA_1798.100, NIST_AI_600_1, PCI_DSS_REQ3")
 @enforcement("flag")
-@description("PII detected in prompt — flagged for review")
+@description("Personal data detected in prompt — flagged for review")
 forbid(principal, action == EnforceGrid::Action::"llm.request", resource)
-when { context.pii_detected == true };
+when {
+  context.pii_findings.containsAny([
+    "credit_card",
+    "ssn",
+    "email",
+    "phone",
+    "phone_intl",
+    "ip_address",
+    "iban"
+  ])
+};
+
+// F1b: Block auth secrets and credentials in prompts.
+// Different from personal data — a leaked API key has no legitimate reason to
+// be sent to an upstream LLM and is unambiguously a credential leak. Blocks
+// before the upstream provider sees the value. Operators who want only
+// observation flip `policy.mode: observe` in steer.yaml — that rewrites
+// every @enforcement("block") to @enforcement("flag") globally, including
+// this rule.
+//
+// To extend coverage: add a pattern name to the list below and ensure it is
+// in `pii.patterns` in steer.yaml so the detector compiles it.
+@id("default-secrets-block")
+@category("data_protection")
+@regulatory_mapping("OWASP_LLM06, OWASP_AGENTIC_ASI04, AIUC1_E001, AIUC1_E003, NIST_AI_RMF_MS, GDPR_ART_32")
+@enforcement("block")
+@description("Auth secret or credential detected in prompt — blocked to prevent credential leak")
+forbid(principal, action == EnforceGrid::Action::"llm.request", resource)
+when {
+  context.pii_findings.containsAny([
+    "openai_key",
+    "anthropic_key",
+    "aws_access_key",
+    "aws_secret_key",
+    "github_token",
+    "slack_token",
+    "stripe_key",
+    "azure_key",
+    "google_api_key",
+    "jwt",
+    "bearer_token",
+    "generic_secret"
+  ])
+};
 
 // F2: Flag threatening content for human review
 @id("default-threat-flag")
@@ -173,14 +220,23 @@ when { context.model_approved == false };
 forbid(principal, action == EnforceGrid::Action::"llm.response", resource)
 when { context.bias_detected == true };
 
-// B13: Flag when data processing consent not recorded (AIUC-1 E005)
-@id("default-no-consent-flag")
-@category("data_protection")
-@regulatory_mapping("AIUC1_E005, GDPR_ART_6")
-@enforcement("flag")
-@description("Data processing consent not recorded for tenant — flagged")
-forbid(principal, action == EnforceGrid::Action::"llm.request", resource)
-when { context.consent_given == false };
+// Note: `default-no-consent-flag` was removed from the shipped baseline in
+// v0.1.0. It fires on every request when the tenant has not recorded data
+// processing consent, which generated noise in the audit log without any
+// way for an OSS operator to flip the bit (consent_given is exposed via
+// `tenant.consent_given` in steer.yaml as of v0.1.0 — set to true once you
+// have lawful basis recorded elsewhere).
+//
+// To re-enable for GDPR / AIUC-1 E005 evidence collection, drop this into a
+// tenant-override file at `<policy_dir>/default/consent.cedar`:
+//
+//   @id("custom-no-consent-flag")
+//   @category("data_protection")
+//   @regulatory_mapping("AIUC1_E005, GDPR_ART_6")
+//   @enforcement("flag")
+//   @description("Data processing consent not recorded for tenant — flagged")
+//   forbid(principal, action == EnforceGrid::Action::"llm.request", resource)
+//   when { context.consent_given == false };
 
 // B12: Flag anomalous traffic patterns (AIUC-1 D005)
 // AIUC1_A008: anomaly detection feeds continuous improvement workflow.

@@ -39,12 +39,16 @@ pub struct McpServerRegistry {
 
 impl McpServerRegistry {
     pub fn new() -> Self {
-        Self { servers: parking_lot::RwLock::new(std::collections::HashMap::new()) }
+        Self {
+            servers: parking_lot::RwLock::new(std::collections::HashMap::new()),
+        }
     }
 }
 
 impl Default for McpServerRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl McpRegistryProvider for McpServerRegistry {

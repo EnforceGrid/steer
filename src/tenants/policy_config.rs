@@ -2,8 +2,8 @@
 //! These structs are defined in steer-core so the registry trait and TenantPolicyRegistry
 //! can use them without depending on SQLite (which lives in steer-ee).
 
-use serde::{Deserialize, Serialize};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 /// The current managed policy version assigned to new tenants.
 pub const CURRENT_MANAGED_VERSION: &str = "v2";

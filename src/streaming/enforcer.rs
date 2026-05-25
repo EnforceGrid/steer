@@ -1,6 +1,6 @@
-use crate::pii::{PiiFinding, RegexPiiEngine};
 use super::buffer::WordBoundaryBuffer;
 use super::parsers::get_parser;
+use crate::pii::{PiiFinding, RegexPiiEngine};
 
 /// Process a single SSE chunk through the enforcement pipeline.
 /// Returns the bytes to emit to the caller (possibly empty, possibly rewritten).
@@ -51,7 +51,9 @@ pub fn process_chunk(
         if !new_findings.is_empty() {
             findings.extend(new_findings);
         }
-        output.extend_from_slice(&scanned);
+        let scanned_str = String::from_utf8_lossy(&scanned);
+        let encoded = parser.encode_text_delta(&scanned_str);
+        output.extend_from_slice(&encoded);
     }
 
     (output, false)
@@ -66,21 +68,46 @@ fn extract_delta_text(v: &serde_json::Value) -> Option<String> {
         .and_then(|c| c.as_str())
         .map(|s| s.to_string())
         .or_else(|| {
-            // Anthropic: delta.text
+            // Anthropic/Bedrock text_delta: delta.text
             v.get("delta")
                 .and_then(|d| d.get("text"))
                 .and_then(|t| t.as_str())
                 .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            // Anthropic/Bedrock thinking_delta: delta.thinking (Claude 3.7+ extended thinking)
+            v.get("delta")
+                .and_then(|d| d.get("thinking"))
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            // Gemini: candidates[0].content.parts[*].text
+            let parts = v
+                .get("candidates")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("content"))
+                .and_then(|c| c.get("parts"))
+                .and_then(|p| p.as_array())?;
+            let text: String = parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
         })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use crate::error::SteerResult;
     use crate::pii::RegexPiiEngine;
     use crate::policy::{EnforcementAction, PolicyDecision, PolicyEngine};
-    use crate::error::SteerResult;
+    use std::sync::Arc;
 
     fn engine_with_email() -> RegexPiiEngine {
         RegexPiiEngine::new(&["email".to_string()])
@@ -106,8 +133,11 @@ mod tests {
         let (out, _control) = run(&engine, raw);
         // No PII — output should contain the flushed text "hello world"
         let text = std::str::from_utf8(&out).unwrap_or("");
-        assert!(text.contains("hello world") || out.is_empty(),
-            "unexpected output: {:?}", out);
+        assert!(
+            text.contains("hello world") || out.is_empty(),
+            "unexpected output: {:?}",
+            out
+        );
     }
 
     #[test]
@@ -124,7 +154,12 @@ mod tests {
         let mut buffer = WordBoundaryBuffer::new(1024);
         let mut findings = vec![];
         let (out, _control) = process_chunk(
-            raw.as_bytes(), &mut buffer, &engine, "openai", "", &mut findings,
+            raw.as_bytes(),
+            &mut buffer,
+            &engine,
+            "openai",
+            "",
+            &mut findings,
         );
 
         // If the buffer flushed (boundary on space), output must not contain the raw email
@@ -132,7 +167,8 @@ mod tests {
             let text = std::str::from_utf8(&out).unwrap();
             assert!(
                 !text.contains("user@example.com"),
-                "email should have been redacted, got: {:?}", text
+                "email should have been redacted, got: {:?}",
+                text
             );
             // At least one finding recorded
             assert!(!findings.is_empty(), "expected a PII finding");
@@ -150,6 +186,7 @@ mod tests {
     }
 
     impl FixedPolicyEngine {
+        #[allow(clippy::new_ret_no_self)]
         fn new(decision: PolicyDecision) -> Arc<dyn PolicyEngine> {
             Arc::new(Self { decision })
         }
@@ -196,7 +233,9 @@ mod tests {
             }
             EnforcementAction::Flag => {
                 verdict = "flag".to_string();
-                let rule_id = decision.rule_id.clone()
+                let rule_id = decision
+                    .rule_id
+                    .clone()
                     .unwrap_or_else(|| "streaming_policy".to_string());
                 findings.push(PiiFinding {
                     pattern: rule_id,
@@ -226,7 +265,9 @@ mod tests {
             }
             EnforcementAction::Steer => {
                 verdict = "steer".to_string();
-                let msg = decision.steer_message.as_deref()
+                let msg = decision
+                    .steer_message
+                    .as_deref()
                     .unwrap_or("I can't help with that.");
                 let steer_bytes = parser.encode_steer(msg, "steer");
                 emitted.extend_from_slice(&steer_bytes);
@@ -234,8 +275,7 @@ mod tests {
             }
             EnforcementAction::Block => {
                 verdict = "block".to_string();
-                let rule_id = decision.rule_id.as_deref()
-                    .unwrap_or("policy_block");
+                let rule_id = decision.rule_id.as_deref().unwrap_or("policy_block");
                 let error_bytes = parser.encode_error(rule_id, "block");
                 emitted.extend_from_slice(&error_bytes);
                 terminated = true;
@@ -282,14 +322,16 @@ mod tests {
             regulatory_mapping: vec![],
             matched_rules: vec![],
         };
-        let (emitted, _findings, verdict, terminated) =
-            apply_verdict(content, decision, vec![]);
+        let (emitted, _findings, verdict, terminated) = apply_verdict(content, decision, vec![]);
 
         assert_eq!(verdict, "block");
         assert!(terminated, "block should terminate the stream");
         // The emitted bytes should be an error frame, not the original content
         let text = String::from_utf8_lossy(&emitted);
-        assert!(!text.contains("blocked content"), "original content must not be emitted after block");
+        assert!(
+            !text.contains("blocked content"),
+            "original content must not be emitted after block"
+        );
         // Should contain an error indicator (non-empty error frame)
         assert!(!emitted.is_empty(), "block should emit an error frame");
     }
@@ -307,17 +349,20 @@ mod tests {
             regulatory_mapping: vec![],
             matched_rules: vec![],
         };
-        let (emitted, _findings, verdict, terminated) =
-            apply_verdict(content, decision, vec![]);
+        let (emitted, _findings, verdict, terminated) = apply_verdict(content, decision, vec![]);
 
         assert_eq!(verdict, "steer");
         assert!(terminated, "steer should terminate the stream");
         // The emitted bytes should contain the steer message, not the original content
         let text = String::from_utf8_lossy(&emitted);
-        assert!(!text.contains("steered content"), "original content must not be emitted after steer");
+        assert!(
+            !text.contains("steered content"),
+            "original content must not be emitted after steer"
+        );
         assert!(
             text.contains("Let me redirect you to a safer topic."),
-            "steer message must appear in output, got: {:?}", text
+            "steer message must appear in output, got: {:?}",
+            text
         );
     }
 
@@ -334,15 +379,25 @@ mod tests {
             regulatory_mapping: vec![],
             matched_rules: vec![],
         };
-        let (emitted, _findings, verdict, terminated) =
-            apply_verdict(content, decision, vec![]);
+        let (emitted, _findings, verdict, terminated) = apply_verdict(content, decision, vec![]);
 
         assert_eq!(verdict, "transform");
         assert!(!terminated, "transform should not terminate the stream");
         let text = String::from_utf8_lossy(&emitted);
-        assert!(!text.contains("SECRET"), "SECRET must be replaced, got: {:?}", text);
-        assert!(text.contains("[REDACTED]"), "replacement must appear, got: {:?}", text);
-        assert!(text.contains("hello"), "surrounding context must be preserved");
+        assert!(
+            !text.contains("SECRET"),
+            "SECRET must be replaced, got: {:?}",
+            text
+        );
+        assert!(
+            text.contains("[REDACTED]"),
+            "replacement must appear, got: {:?}",
+            text
+        );
+        assert!(
+            text.contains("hello"),
+            "surrounding context must be preserved"
+        );
     }
 
     // 5. Allow verdict with PII: PII is redacted, policy is Allow, content emitted
@@ -372,7 +427,8 @@ mod tests {
         let text = String::from_utf8_lossy(&emitted);
         assert!(
             !text.contains("user@example.com"),
-            "email must be redacted in output, got: {:?}", text
+            "email must be redacted in output, got: {:?}",
+            text
         );
         assert!(!findings.is_empty(), "PII findings must be present");
     }
@@ -389,12 +445,14 @@ mod tests {
             regulatory_mapping: vec![],
             matched_rules: vec![],
         });
-        let decision = engine.evaluate_response(
-            "test_principal",
-            "llm.response",
-            &serde_json::Value::Null,
-            &serde_json::json!({"streaming": true}),
-        ).expect("mock engine should not error");
+        let decision = engine
+            .evaluate_response(
+                "test_principal",
+                "llm.response",
+                &serde_json::Value::Null,
+                &serde_json::json!({"streaming": true}),
+            )
+            .expect("mock engine should not error");
         assert_eq!(decision.action, EnforcementAction::Flag);
         assert_eq!(decision.rule_id.as_deref(), Some("mock_rule"));
     }
@@ -410,12 +468,69 @@ mod tests {
         let raw = b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n";
         let (out, _control) = run(&engine, raw);
 
-        assert!(!out.is_empty(), "finish_reason: tool_calls frame must not be dropped");
+        assert!(
+            !out.is_empty(),
+            "finish_reason: tool_calls frame must not be dropped"
+        );
         let text = std::str::from_utf8(&out).unwrap();
         assert!(
             text.contains("\"finish_reason\":\"tool_calls\""),
-            "finish_reason value must be preserved verbatim, got: {:?}", text
+            "finish_reason value must be preserved verbatim, got: {:?}",
+            text
         );
+    }
+
+    // ─── encode_text_delta wire format tests ────────────────────────────────
+
+    #[test]
+    fn process_chunk_emits_sse_framed_output_for_text_delta() {
+        let engine = engine_passthrough();
+        let raw = b"data: {\"choices\":[{\"delta\":{\"content\":\"hello world \"}}]}\n\n";
+        let (out, _control) = run(&engine, raw);
+
+        if !out.is_empty() {
+            let text = std::str::from_utf8(&out).unwrap();
+            assert!(
+                text.starts_with("data: "),
+                "output must be SSE-framed, got: {:?}",
+                text
+            );
+            assert!(
+                text.ends_with("\n\n"),
+                "output must end with SSE terminator, got: {:?}",
+                text
+            );
+            assert!(
+                text.contains("hello world"),
+                "text content must be preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn process_chunk_pii_redacted_output_is_sse_framed() {
+        let engine = engine_with_email();
+        let raw =
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"email user@example.com \"}}]}\n\n";
+        let mut buffer = WordBoundaryBuffer::new(1024);
+        let mut findings = vec![];
+        let (out, _) = process_chunk(raw, &mut buffer, &engine, "openai", "", &mut findings);
+
+        if !out.is_empty() {
+            let text = std::str::from_utf8(&out).unwrap();
+            assert!(
+                text.starts_with("data: "),
+                "redacted output must be SSE-framed"
+            );
+            assert!(
+                text.ends_with("\n\n"),
+                "redacted output must end with SSE terminator"
+            );
+            assert!(
+                !text.contains("user@example.com"),
+                "raw email must not appear in output"
+            );
+        }
     }
 
     /// End-to-end: a realistic tool-call streaming sequence — tool_call deltas
@@ -435,7 +550,10 @@ mod tests {
         // Frame 2: tool_call argument delta
         let frame2 = b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\\\"London\\\"}\"}}]}}]}\n\n";
         let (out2, _) = process_chunk(frame2, &mut buffer, &engine, "openai", "", &mut findings);
-        assert!(!out2.is_empty(), "tool_call argument delta must pass through");
+        assert!(
+            !out2.is_empty(),
+            "tool_call argument delta must pass through"
+        );
 
         // Frame 3: finish_reason: "tool_calls" with empty delta
         let frame3 = b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n";
@@ -444,7 +562,8 @@ mod tests {
         let text = std::str::from_utf8(&out3).unwrap();
         assert!(
             text.contains("\"finish_reason\":\"tool_calls\""),
-            "finish_reason must be preserved in output, got: {:?}", text
+            "finish_reason must be preserved in output, got: {:?}",
+            text
         );
     }
 }

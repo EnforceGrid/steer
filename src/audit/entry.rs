@@ -1,12 +1,14 @@
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
 use crate::pii::PiiFinding;
 use crate::policy::{DetectionLabel, MatchedRule};
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub audit_id: String,
     pub timestamp: String,
+    // Omitted in OSS (always ""). Enterprise populates for hash-chain verification.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prev_hash: String,
 
     pub request: RequestInfo,
@@ -107,7 +109,9 @@ pub struct EnforcementInfo {
     pub matched_rules: Vec<MatchedRule>,
 }
 
-fn is_false(v: &bool) -> bool { !v }
+fn is_false(v: &bool) -> bool {
+    !v
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamingInfo {
@@ -137,6 +141,7 @@ pub struct StreamLatency {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -176,7 +181,10 @@ mod tests {
         // Roundtrip
         let decoded: AuditEntry = serde_json::from_value(json).unwrap();
         assert_eq!(decoded.audit_id, "abc123");
-        assert_eq!(decoded.enforcement.regulatory_mapping, vec!["EU_AI_ACT_ART_9".to_string()]);
+        assert_eq!(
+            decoded.enforcement.regulatory_mapping,
+            vec!["EU_AI_ACT_ART_9".to_string()]
+        );
     }
 
     #[test]
@@ -184,9 +192,18 @@ mod tests {
         let entry = AuditEntry::new("x".to_string());
         let json = serde_json::to_value(&entry).unwrap();
         // Optional fields with skip_serializing_if = "Option::is_none" should not appear
-        assert!(json.get("agent_id").is_none(), "agent_id should be omitted when None");
-        assert!(json.get("tenant_id").is_none(), "tenant_id should be omitted when None");
-        assert!(json.get("streaming").is_none(), "streaming should be omitted when None");
+        assert!(
+            json.get("agent_id").is_none(),
+            "agent_id should be omitted when None"
+        );
+        assert!(
+            json.get("tenant_id").is_none(),
+            "tenant_id should be omitted when None"
+        );
+        assert!(
+            json.get("streaming").is_none(),
+            "streaming should be omitted when None"
+        );
     }
 
     #[test]
@@ -218,7 +235,6 @@ mod tests {
 
     #[test]
     fn streaming_info_serialization() {
-        use crate::pii::PiiFinding;
         let info = StreamingInfo {
             provider: "openai".to_string(),
             action: "allow".to_string(),

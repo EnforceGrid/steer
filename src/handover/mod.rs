@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,7 +53,10 @@ impl HoldStore {
         tenant_id: Option<String>,
     ) -> Result<Hold, &'static str> {
         let mut holds = self.holds.lock();
-        let active = holds.values().filter(|h| h.status == HoldStatus::Pending).count();
+        let active = holds
+            .values()
+            .filter(|h| h.status == HoldStatus::Pending)
+            .count();
         if active >= self.max_concurrent {
             return Err("max_concurrent_holds exceeded");
         }
@@ -72,12 +75,17 @@ impl HoldStore {
     }
 
     /// List all holds for a specific tenant, optionally filtered by status.
-    pub fn list_for_tenant(&self, tenant_id: &str, status_filter: Option<&HoldStatus>) -> Vec<Hold> {
+    pub fn list_for_tenant(
+        &self,
+        tenant_id: &str,
+        status_filter: Option<&HoldStatus>,
+    ) -> Vec<Hold> {
         let holds = self.holds.lock();
-        holds.values()
+        holds
+            .values()
             .filter(|h| {
                 h.tenant_id.as_deref() == Some(tenant_id)
-                    && status_filter.map_or(true, |s| h.status == *s)
+                    && status_filter.is_none_or(|s| h.status == *s)
             })
             .cloned()
             .collect()

@@ -24,7 +24,11 @@ pub struct TenantContext {
 
 impl TenantContext {
     pub fn new(tenant_id: impl Into<String>) -> Self {
-        Self { tenant_id: tenant_id.into(), roles: vec![], bound_agent_id: None }
+        Self {
+            tenant_id: tenant_id.into(),
+            roles: vec![],
+            bound_agent_id: None,
+        }
     }
 
     pub fn with_roles(mut self, roles: Vec<String>) -> Self {
@@ -67,6 +71,28 @@ fn role_satisfies(held: &str, required: &str) -> bool {
         "policy:auditor" => matches!(held, "policy:author" | "policy:approver"),
         "policy:author" => held == "policy:approver",
         _ => false,
+    }
+}
+
+/// Call at the top of gated handlers: `require_role(&ctx, "policy:author")?;`
+#[allow(clippy::result_large_err)]
+pub fn require_role(ctx: &TenantContext, role: &str) -> Result<(), Response> {
+    if ctx.has_role(role) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": {
+                    "code": "forbidden",
+                    "message": format!(
+                        "This API key lacks the '{}' role required for this operation.",
+                        role
+                    )
+                }
+            })),
+        )
+            .into_response())
     }
 }
 
@@ -132,8 +158,14 @@ mod tests {
     fn has_role_auditor_only_satisfies_auditor() {
         let ctx = TenantContext::new("t1").with_roles(vec!["policy:auditor".to_string()]);
         assert!(ctx.has_role("policy:auditor"), "auditor satisfies auditor");
-        assert!(!ctx.has_role("policy:author"), "auditor does not satisfy author");
-        assert!(!ctx.has_role("policy:approver"), "auditor does not satisfy approver");
+        assert!(
+            !ctx.has_role("policy:author"),
+            "auditor does not satisfy author"
+        );
+        assert!(
+            !ctx.has_role("policy:approver"),
+            "auditor does not satisfy approver"
+        );
     }
 
     #[test]
@@ -141,7 +173,10 @@ mod tests {
         let ctx = TenantContext::new("t1").with_roles(vec!["policy:author".to_string()]);
         assert!(ctx.has_role("policy:auditor"), "author satisfies auditor");
         assert!(ctx.has_role("policy:author"), "author satisfies author");
-        assert!(!ctx.has_role("policy:approver"), "author does not satisfy approver");
+        assert!(
+            !ctx.has_role("policy:approver"),
+            "author does not satisfy approver"
+        );
     }
 
     #[test]
@@ -168,29 +203,8 @@ mod tests {
 
     #[test]
     fn require_role_returns_403_response() {
-        use axum::response::IntoResponse;
         let ctx = TenantContext::new("t1").with_roles(vec!["policy:auditor".to_string()]);
         let err = require_role(&ctx, "policy:author").unwrap_err();
         assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
-    }
-}
-
-/// Call at the top of gated handlers: `require_role(&ctx, "policy:author")?;`
-pub fn require_role(ctx: &TenantContext, role: &str) -> Result<(), Response> {
-    if ctx.has_role(role) {
-        Ok(())
-    } else {
-        Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": {
-                    "code": "forbidden",
-                    "message": format!(
-                        "This API key lacks the '{}' role required for this operation.",
-                        role
-                    )
-                }
-            })),
-        ).into_response())
     }
 }
