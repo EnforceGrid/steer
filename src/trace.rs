@@ -75,17 +75,23 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_version() {
-        assert!(parse_traceparent("01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01").is_none());
+        assert!(
+            parse_traceparent("01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01").is_none()
+        );
     }
 
     #[test]
     fn rejects_all_zero_trace_id() {
-        assert!(parse_traceparent("00-00000000000000000000000000000000-b7ad6b7169203331-01").is_none());
+        assert!(
+            parse_traceparent("00-00000000000000000000000000000000-b7ad6b7169203331-01").is_none()
+        );
     }
 
     #[test]
     fn rejects_all_zero_parent_id() {
-        assert!(parse_traceparent("00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01").is_none());
+        assert!(
+            parse_traceparent("00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01").is_none()
+        );
     }
 
     #[test]
@@ -95,12 +101,16 @@ mod tests {
 
     #[test]
     fn rejects_non_hex_chars() {
-        assert!(parse_traceparent("00-0af7651916cd43dd8448eb211c80319g-b7ad6b7169203331-01").is_none());
+        assert!(
+            parse_traceparent("00-0af7651916cd43dd8448eb211c80319g-b7ad6b7169203331-01").is_none()
+        );
     }
 
     #[test]
     fn rejects_too_few_parts() {
-        assert!(parse_traceparent("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331").is_none());
+        assert!(
+            parse_traceparent("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331").is_none()
+        );
     }
 
     #[test]
@@ -114,7 +124,9 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "traceparent",
-            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".parse().unwrap(),
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+                .parse()
+                .unwrap(),
         );
         let ctx = extract(&headers).unwrap();
         assert_eq!(ctx.trace_id, "0af7651916cd43dd8448eb211c80319c");

@@ -30,7 +30,11 @@ fn next_day_utc(now: DateTime<Utc>) -> DateTime<Utc> {
 
 fn next_monday_utc(now: DateTime<Utc>) -> DateTime<Utc> {
     let today_dow = now.weekday().num_days_from_monday(); // Mon=0..Sun=6
-    let add = if today_dow == 0 { 7 } else { 7 - today_dow as i64 };
+    let add = if today_dow == 0 {
+        7
+    } else {
+        7 - today_dow as i64
+    };
     let target = now.date_naive() + Duration::days(add);
     Utc.from_utc_datetime(&target.and_hms_opt(0, 0, 0).unwrap())
 }

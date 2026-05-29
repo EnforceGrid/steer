@@ -69,8 +69,7 @@ fn validate_api_key(
     if trimmed.is_empty() {
         warnings.push(ConfigWarning {
             field: field.to_string(),
-            message: "value is whitespace-only — upstream will reject as invalid auth"
-                .to_string(),
+            message: "value is whitespace-only — upstream will reject as invalid auth".to_string(),
         });
         return;
     }
@@ -280,7 +279,10 @@ mod tests {
 
     #[test]
     fn infer_provider_recognizes_anthropic() {
-        assert_eq!(infer_provider("https://api.anthropic.com"), Some("anthropic"));
+        assert_eq!(
+            infer_provider("https://api.anthropic.com"),
+            Some("anthropic")
+        );
         assert_eq!(infer_provider("https://api.openai.com/v1"), Some("openai"));
         assert_eq!(infer_provider("https://localhost:11434"), None);
     }
