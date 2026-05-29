@@ -48,7 +48,11 @@ steer --port 8080
 | **Continue.dev** | `config.json` → `"apiBase": "http://localhost:8080/v1"` |
 | **OpenAI / Anthropic SDK** | Set `base_url="http://localhost:8080/v1"` (OpenAI) or `base_url="http://localhost:8080"` (Anthropic) |
 
-Your existing API key is forwarded to the upstream in the `Authorization` header unchanged. Steer's policy engine inspects the request **body**, not the auth header — the header is not logged, persisted, or substituted (unless you opt into key-vaulting). Quick check from a shell:
+Your existing API key is forwarded to the upstream in the `Authorization` header unchanged. Steer's policy engine inspects the request **body**, not the auth header — the header is not logged, persisted, or substituted (unless you opt into key-vaulting).
+
+> **Anthropic exception**: when `upstream.api_key` is set and the upstream is `api.anthropic.com`, Steer **unconditionally overrides** the inbound `x-api-key` with the configured key. If you want client-supplied keys to pass through, leave `upstream.api_key` empty. Misconfigured keys (placeholders, whitespace, wrong account) surface as `401 invalid x-api-key` from Anthropic. See [Auth passthrough](docs/quickstart.md#4-auth-passthrough--how-your-api-keys-are-handled) for full details. Every audit entry carries `auth_source: "config" | "client_passthrough"` so you can tell which path was taken.
+
+Quick check from a shell:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \

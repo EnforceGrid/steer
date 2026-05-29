@@ -1,5 +1,29 @@
 use std::collections::HashMap;
 
+/// Which source supplied the auth header that was forwarded upstream.
+/// Stamped into the audit entry so operators can tell whether their
+/// `upstream.api_key` was honored or bypassed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthSource {
+    /// Steer's `upstream.api_key` (or per-provider `providers.X.api_key`)
+    /// was injected. For Anthropic, this OVERRIDES any client-provided
+    /// `x-api-key` — see auth.rs::resolve_auth_for_provider.
+    Config,
+    /// Client's inbound `Authorization` or `x-api-key` was passed through
+    /// unchanged. Happens when `configured_api_key` is empty (non-Anthropic)
+    /// or when the client sent `Authorization` to a non-Anthropic upstream.
+    ClientPassthrough,
+}
+
+impl AuthSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthSource::Config => "config",
+            AuthSource::ClientPassthrough => "client_passthrough",
+        }
+    }
+}
+
 /// Resolve the auth header to use for upstream requests.
 /// Precedence:
 ///   1. Caller's existing auth header (Authorization or x-api-key, if present)
@@ -12,7 +36,7 @@ use std::collections::HashMap;
 pub fn resolve_auth(
     headers: &mut HashMap<String, String>,
     configured_api_key: &str,
-) -> Result<(), String> {
+) -> Result<AuthSource, String> {
     resolve_auth_for_provider(headers, configured_api_key, None)
 }
 
@@ -20,7 +44,7 @@ pub fn resolve_auth_for_provider(
     headers: &mut HashMap<String, String>,
     configured_api_key: &str,
     provider_name: Option<&str>,
-) -> Result<(), String> {
+) -> Result<AuthSource, String> {
     let is_anthropic = provider_name.is_some_and(|p| p.eq_ignore_ascii_case("anthropic"));
 
     // Check if the caller already sent valid auth
@@ -42,6 +66,7 @@ pub fn resolve_auth_for_provider(
             // rather than a real Anthropic key.  Replacing it ensures the correct
             // key reaches Anthropic regardless of what the client sent.
             headers.insert("x-api-key".to_string(), configured_api_key.to_string());
+            return Ok(AuthSource::Config);
         } else {
             // Non-Anthropic: only inject if no auth already present
             if !has_auth {
@@ -49,14 +74,15 @@ pub fn resolve_auth_for_provider(
                     "authorization".to_string(),
                     format!("Bearer {configured_api_key}"),
                 );
+                return Ok(AuthSource::Config);
             }
+            return Ok(AuthSource::ClientPassthrough);
         }
-        return Ok(());
     }
 
     // No configured upstream key — pass through whatever the caller sent
     if has_auth || has_x_api_key {
-        return Ok(());
+        return Ok(AuthSource::ClientPassthrough);
     }
 
     Err("No API key. Set OPENAI_API_KEY / ANTHROPIC_API_KEY or add api_key to steer.yaml under upstream.".to_string())
@@ -74,7 +100,7 @@ mod tests {
             "Bearer existing-token".to_string(),
         );
         let result = resolve_auth(&mut headers, "configured-key");
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), AuthSource::ClientPassthrough);
         assert_eq!(
             headers.get("authorization").unwrap(),
             "Bearer existing-token"
@@ -85,7 +111,7 @@ mod tests {
     fn resolve_auth_injects_configured_key_when_missing() {
         let mut headers = HashMap::new();
         let result = resolve_auth(&mut headers, "configured-key");
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), AuthSource::Config);
         assert_eq!(
             headers.get("authorization").unwrap(),
             "Bearer configured-key"
@@ -105,7 +131,7 @@ mod tests {
         let mut headers = HashMap::new();
         headers.insert("authorization".to_string(), "   ".to_string());
         let result = resolve_auth(&mut headers, "fallback-key");
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), AuthSource::Config);
         assert_eq!(headers.get("authorization").unwrap(), "Bearer fallback-key");
     }
 
@@ -113,7 +139,7 @@ mod tests {
     fn resolve_auth_anthropic_injects_x_api_key() {
         let mut headers = HashMap::new();
         let result = resolve_auth_for_provider(&mut headers, "sk-ant-key", Some("anthropic"));
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), AuthSource::Config);
         assert_eq!(headers.get("x-api-key").unwrap(), "sk-ant-key");
         assert!(!headers.contains_key("authorization"));
     }
@@ -129,7 +155,7 @@ mod tests {
             "eg_sk_live_caller-steer-key".to_string(),
         );
         let result = resolve_auth_for_provider(&mut headers, "sk-ant-upstream", Some("anthropic"));
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), AuthSource::Config);
         assert_eq!(headers.get("x-api-key").unwrap(), "sk-ant-upstream");
     }
 
@@ -143,7 +169,7 @@ mod tests {
             "sk-ant-real-anthropic-key".to_string(),
         );
         let result = resolve_auth_for_provider(&mut headers, "", Some("anthropic"));
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), AuthSource::ClientPassthrough);
         assert_eq!(
             headers.get("x-api-key").unwrap(),
             "sk-ant-real-anthropic-key"
@@ -154,7 +180,7 @@ mod tests {
     fn resolve_auth_openai_uses_bearer_even_when_explicit() {
         let mut headers = HashMap::new();
         let result = resolve_auth_for_provider(&mut headers, "sk-openai", Some("openai"));
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), AuthSource::Config);
         assert_eq!(headers.get("authorization").unwrap(), "Bearer sk-openai");
         assert!(!headers.contains_key("x-api-key"));
     }
@@ -163,7 +189,16 @@ mod tests {
     fn resolve_auth_none_provider_defaults_to_bearer() {
         let mut headers = HashMap::new();
         let result = resolve_auth_for_provider(&mut headers, "some-key", None);
-        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), AuthSource::Config);
         assert_eq!(headers.get("authorization").unwrap(), "Bearer some-key");
+    }
+
+    #[test]
+    fn resolve_auth_non_anthropic_with_client_auth_returns_passthrough() {
+        let mut headers = HashMap::new();
+        headers.insert("authorization".to_string(), "Bearer client-key".to_string());
+        let result = resolve_auth_for_provider(&mut headers, "configured-key", Some("openai"));
+        assert_eq!(result.unwrap(), AuthSource::ClientPassthrough);
+        assert_eq!(headers.get("authorization").unwrap(), "Bearer client-key");
     }
 }

@@ -149,9 +149,41 @@ The request still reaches the upstream — flagging logs without blocking.
 
 ## 4. Auth passthrough — how your API keys are handled
 
-Your `Authorization` header passes through to the upstream LLM unchanged. **Steer never reads, stores, or substitutes your API key** — unless you opt in by setting `providers.<name>.api_key` in `steer.yaml`, in which case Steer overrides the inbound header with the configured key (useful for centralized key rotation in EE).
+Steer's default behavior is **passthrough**: your `Authorization` or `x-api-key` header reaches the upstream LLM unchanged. Steer reads, stores, and substitutes your API key **only** when you opt in by setting `upstream.api_key` (or `providers.<name>.api_key`) in `steer.yaml`.
 
-You can verify this against an empty Steer config:
+### Anthropic exception — unconditional substitution
+
+For Anthropic upstreams (`base_url` containing `anthropic.com`), the rule is stricter: **if `upstream.api_key` is set, Steer ALWAYS overrides the inbound `x-api-key` header with the configured value**, even if the client sent a perfectly valid Anthropic key. This is deliberate — it prevents `eg_sk_live_…` style Steer credentials from being forwarded to Anthropic by mistake in multi-tenant deployments.
+
+The implication for OSS single-user setups: **if you're configuring Steer with `upstream.base_url: https://api.anthropic.com`, your `upstream.api_key` must be a real, valid Anthropic key.** If you want the client to supply its own key (passthrough), leave `upstream.api_key` empty:
+
+```yaml
+upstream:
+  base_url: https://api.anthropic.com
+  api_key: ""    # empty = passthrough; client's x-api-key reaches Anthropic
+```
+
+If the substituted key is wrong, expired, or contains a copy-paste artifact (newline, surrounding `${...}` that didn't resolve), every Steer-proxied call returns 401 even though the same key works direct. Steer warns at startup about common misconfigurations:
+
+```
+WARN config sanity check field=upstream.api_key
+  message=value looks like an unresolved env-var placeholder ("${ANTHROPIC_API_KEY}")
+```
+
+### Audit trail
+
+Every audit entry carries an `auth_source` field telling you which path was taken:
+
+- `"config"` — Steer's `upstream.api_key` was forwarded
+- `"client_passthrough"` — the inbound header was forwarded as-is
+- field absent — auth resolution failed and `proxy.fail_open` engaged
+
+Filter for unexpected substitutions:
+```bash
+jq 'select(.auth_source == "config" and .response.status_code == 401)' audit.jsonl
+```
+
+### Verify passthrough against an empty Steer config
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
@@ -160,7 +192,7 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-Steer's pipeline scans the request body for policy violations, but the `Authorization` header is opaque to the policy engine. See [docs/providers.md](providers.md#3-auth-passthrough) for the per-provider details.
+Steer's pipeline scans the request body for policy violations, but the auth header itself is opaque to the policy engine. See [docs/providers.md](providers.md#3-auth-passthrough) for the per-provider details.
 
 ---
 

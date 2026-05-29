@@ -419,6 +419,12 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
+    // WARN on suspicious api_key values (placeholders, whitespace, wrong vendor prefix).
+    // v0.1.1: warn only; v0.2 will promote to refuse-to-start (see Item 2 of v0.1.1 spec).
+    for w in steer_core::config::validate::validate(&config) {
+        warn!(field = %w.field, message = %w.message, "config sanity check");
+    }
+
     // Fail-loud: a misconfigured audit sink must abort startup. Silently
     // falling back to stdout would compromise the evidentiary guarantee that
     // Steer's value proposition rests on. See stage/doc_requirements.md §16.7.

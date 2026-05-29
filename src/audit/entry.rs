@@ -57,6 +57,23 @@ pub struct AuditEntry {
     /// "deferred" (will be redacted in enrichment entry), or "none"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_redaction: Option<String>,
+
+    /// W3C trace context trace_id from inbound `traceparent` header.
+    /// Lets operators pivot between an APM trace and this audit row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+
+    /// W3C trace context parent_span_id from inbound `traceparent` header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_span_id: Option<String>,
+
+    /// Which source supplied the auth header forwarded upstream:
+    /// `"config"` (Steer's `upstream.api_key`) or `"client_passthrough"` (the
+    /// inbound `Authorization` / `x-api-key` was used as-is). Absent if the
+    /// auth resolver errored and fail_open passthrough engaged.
+    /// See `auth::AuthSource`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -271,6 +288,9 @@ impl AuditEntry {
             control_facts: None,
             evidence_labels: vec![],
             payload_redaction: None,
+            trace_id: None,
+            parent_span_id: None,
+            auth_source: None,
         }
     }
 }

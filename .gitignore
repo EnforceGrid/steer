@@ -1,6 +1,9 @@
 # Build
 target/
 
+# Planning notes — internal scratchpad, never committed
+.planning/
+
 # Cargo.lock is committed — Steer ships a binary, reproducible builds require it.
 # (For pure libraries you would skip this and not commit Cargo.lock.)
 

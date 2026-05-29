@@ -16,5 +16,6 @@ pub mod routing;
 pub mod streaming;
 pub mod tenants;
 pub mod tokens;
+pub mod trace;
 
 pub use error::{SteerError, SteerResult};

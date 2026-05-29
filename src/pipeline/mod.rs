@@ -200,6 +200,7 @@ pub async fn run(
     // ── Phase 1: Auth + agent extraction ─────────────────────────────────────
     let t = Instant::now();
     let eg = EgHeaders::extract(&headers);
+    let trace_context = crate::trace::extract(&headers);
     let mut fwd_headers = forward_headers(&headers);
     // Auth header injection happens after Phase 2 routing so the correct
     // provider is known (Anthropic needs x-api-key; others need Authorization).
@@ -331,13 +332,15 @@ pub async fn run(
             None
         }
     });
-    if let Err(msg) =
-        resolve_auth_for_provider(&mut fwd_headers, &route.api_key, effective_provider)
-    {
-        if !state.config.proxy.fail_open {
-            return SteerError::NoApiKey.into_response();
+    let mut auth_source: Option<crate::auth::AuthSource> = None;
+    match resolve_auth_for_provider(&mut fwd_headers, &route.api_key, effective_provider) {
+        Ok(src) => auth_source = Some(src),
+        Err(msg) => {
+            if !state.config.proxy.fail_open {
+                return SteerError::NoApiKey.into_response();
+            }
+            warn!(audit_id = %audit_id, msg = %msg, "no api key — fail_open passthrough");
         }
-        warn!(audit_id = %audit_id, msg = %msg, "no api key — fail_open passthrough");
     }
     timing.model_routing_ms = Some(t.elapsed().as_secs_f64() * 1000.0);
 
@@ -671,6 +674,8 @@ pub async fn run(
             agent_id: Some(principal),
             context_snapshot: Some(&policy_context),
             hold_id: None,
+            trace_context: trace_context.as_ref(),
+            auth_source,
         });
         state.audit_sink.write(entry);
         record_perf(
@@ -751,6 +756,8 @@ pub async fn run(
                     agent_id: Some(principal),
                     context_snapshot: Some(&policy_context),
                     hold_id: Some(&hold.hold_id),
+                    trace_context: trace_context.as_ref(),
+                    auth_source,
                 });
                 state.audit_sink.write(entry);
 
@@ -1920,6 +1927,8 @@ pub async fn run(
             agent_id: Some(principal),
             context_snapshot: Some(&policy_context),
             hold_id: None,
+            trace_context: trace_context.as_ref(),
+            auth_source,
         });
         state.audit_sink.write(entry);
         record_perf(
@@ -2072,6 +2081,8 @@ pub async fn run(
         agent_id: Some(principal),
         context_snapshot: Some(&policy_context),
         hold_id: None,
+        trace_context: trace_context.as_ref(),
+        auth_source,
     });
     state.audit_sink.write(entry);
     record_perf(
@@ -2295,6 +2306,10 @@ struct AuditParams<'a> {
     context_snapshot: Option<&'a Value>,
     /// Hold ID when action is "steer" (human-in-the-loop).
     hold_id: Option<&'a str>,
+    /// W3C trace context (from inbound `traceparent` header), if present.
+    trace_context: Option<&'a crate::trace::TraceContext>,
+    /// Which source supplied the auth header forwarded upstream (audit only).
+    auth_source: Option<crate::auth::AuthSource>,
 }
 
 /// Truncate a payload string to max_bytes, appending "[…truncated]" if cut.
@@ -2365,6 +2380,13 @@ fn build_audit_entry(p: AuditParams<'_>) -> serde_json::Value {
     }
     if let Some(payload) = p.response_payload {
         entry["response_payload"] = json!(payload);
+    }
+    if let Some(tc) = p.trace_context {
+        entry["trace_id"] = json!(tc.trace_id);
+        entry["parent_span_id"] = json!(tc.parent_span_id);
+    }
+    if let Some(src) = p.auth_source {
+        entry["auth_source"] = json!(src.as_str());
     }
     entry
 }

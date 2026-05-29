@@ -2,6 +2,8 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub mod validate;
+
 /// OIDC configuration — optional section in `SteerConfig`.
 /// Defined here (not in sso/oidc) so steer-core config doesn't depend on openidconnect.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -294,11 +296,11 @@ pub struct AuditConfig {
     /// Retention period in days for performance data. 0 = retain forever. Default: 30.
     #[serde(default = "default_perf_retention_days")]
     pub performance_retention_days: u64,
-    /// Output format: `"json"` (default), `"compact"`, or `"pretty"`.
-    /// - `json`: one full single-line JSON object per request. Default —
-    ///   meant for SIEM ingestion and machine processing.
-    /// - `compact`: one human-readable line per request — useful for
-    ///   `docker logs -f` and developer debugging.
+    /// Output format: `"compact"` (default), `"json"`, or `"pretty"`.
+    /// - `compact`: one human-readable line per request. Default —
+    ///   readable in `docker logs -f` and developer terminals out of the box.
+    /// - `json`: one full single-line JSON object per request — for SIEM
+    ///   ingestion and machine processing.
     /// - `pretty`: multi-line indented JSON — slowest, for ad-hoc
     ///   inspection only.
     #[serde(default = "default_audit_format")]
@@ -322,7 +324,7 @@ impl Default for AuditConfig {
 }
 
 fn default_audit_format() -> String {
-    "json".to_string()
+    "compact".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
