@@ -128,6 +128,7 @@ mod tests {
             auth: crate::config::OidcConfig::default(),
             mcp_allowlist: crate::config::McpAllowlistConfig::default(),
             tenant: crate::config::TenantConfig::default(),
+            budget: crate::config::BudgetConfig::default(),
         }
     }
 

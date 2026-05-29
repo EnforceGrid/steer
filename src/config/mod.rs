@@ -74,6 +74,47 @@ pub struct SteerConfig {
     /// these are the single tenant's values.
     #[serde(default)]
     pub tenant: TenantConfig,
+    /// In-memory budget tracking (OSS). Empty list = disabled.
+    /// Spent state is not persisted across restarts in OSS; EE persists via SQLite.
+    #[serde(default)]
+    pub budget: BudgetConfig,
+}
+
+/// In-memory budget tracking configured from yaml.
+///
+/// Each `BudgetEntry` declares a (scope, scope_id, amount, period) tuple.
+/// When the pipeline emits `record_spend(scope, scope_id, cost)`, the cache
+/// decrements remaining; when the period rolls over (UTC midnight for daily,
+/// Monday for weekly, 1st for monthly), spent is reset to 0.
+///
+/// `scope_id` is matched exactly against the runtime scope_id the pipeline
+/// derives (e.g. for `scope: api_key`, the runtime scope_id is a sha256 of
+/// the inbound auth header — operators wanting "per inbound key" budgets
+/// need to declare an entry for each key hash). Wildcard match is future work.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct BudgetConfig {
+    /// List of budgets. Empty (default) = no budget tracking.
+    #[serde(default)]
+    pub budgets: Vec<BudgetEntry>,
+    /// How often the rollover task checks for period boundaries.
+    #[serde(default = "default_budget_check_interval_secs")]
+    pub check_interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BudgetEntry {
+    /// One of: `"api_key"`, `"agent"`, `"tenant"`.
+    pub scope: String,
+    /// Runtime scope_id this budget applies to (exact match).
+    pub scope_id: String,
+    /// Budget cap in USD.
+    pub amount_usd: f64,
+    /// One of: `"daily"`, `"weekly"`, `"monthly"`.
+    pub period: String,
+}
+
+fn default_budget_check_interval_secs() -> u64 {
+    30
 }
 
 /// YAML-exposed tenant settings. Maps 1:1 to `TenantSettings` (the runtime

@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod costs;
 pub mod usage;
+pub mod yaml_source;
 
 pub use cache::{BudgetCache, BudgetEntry, BudgetStatus};
 pub use costs::{CostEstimator, ModelCost};

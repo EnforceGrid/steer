@@ -407,6 +407,22 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let budget_cache = Arc::new(BudgetCache::new());
+    if !config.budget.budgets.is_empty() {
+        steer_core::tokens::yaml_source::populate_cache(&budget_cache, &config.budget.budgets);
+        let cache_clone = budget_cache.clone();
+        let budgets_clone = config.budget.budgets.clone();
+        let interval = config.budget.check_interval_secs;
+        tokio::spawn(steer_core::tokens::yaml_source::run_rollover_task(
+            cache_clone,
+            budgets_clone,
+            interval,
+        ));
+        info!(
+            count = config.budget.budgets.len(),
+            check_interval_secs = interval,
+            "budget tracking enabled (yaml-driven, in-memory)"
+        );
+    }
     let hold_store = HoldStore::new(config.handover.max_concurrent_holds);
     let mcp_registry: Arc<dyn McpRegistryProvider> = Arc::new(McpServerRegistry::new());
 
