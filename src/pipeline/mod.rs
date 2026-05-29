@@ -1884,7 +1884,7 @@ pub async fn run(
             _ => None,
         };
 
-    // If response policy blocks, return 403 instead of the upstream response
+    // If response policy blocks, return 400 instead of the upstream response
     if response_decision.action == EnforcementAction::Block {
         let total_overhead = start.elapsed().as_secs_f64() * 1000.0 - timing.upstream_ms;
         let req_payload_ref = if should_retain_payload(&state.config.audit, "block") {

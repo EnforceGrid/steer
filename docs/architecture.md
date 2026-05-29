@@ -13,7 +13,7 @@ How Steer processes a request, what it emits, and how it fails.
 │  agent,  │         │  │ 1. Route resolution (path → action, model → upstream│ │         │ provider │
 │  curl)   │         │  │ 2. Request-side detectors (sync where blocking)    │  │         │          │
 │          │         │  │ 3. Cedar evaluation (request action)               │  │         │          │
-│          │         │  │ 4. Forward (or 403 with audit entry)               │  │         │          │
+│          │         │  │ 4. Forward (or 400 with audit entry)               │  │         │          │
 │          │         │  │ 5. Response stream — buffered detector pass         │  │         │          │
 │          │         │  │ 6. Cedar evaluation (response / tool action)        │  │         │          │
 │          │         │  │ 7. Audit emit (hot path) + async enrichment        │  │         │          │
@@ -71,10 +71,10 @@ Every proxied request emits one JSON line to the configured audit sink. The sche
 ### Response fields
 
 ```json
-{ "status_code": 403 }
+{ "status_code": 400 }
 ```
 
-Status code reflects what the client received. `403` on a Steer block; the upstream response status when forwarded.
+Status code reflects what the client received. `400` on a Steer block (matches the convention used by upstream content-policy responses, so LLM clients surface the error and don't retry); the upstream response status when forwarded.
 
 ### Latency fields
 

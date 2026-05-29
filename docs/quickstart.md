@@ -116,7 +116,7 @@ Steer terminal:
 [BLOCK] POST /v1/chat/completions model=gpt-4o-mini block=default-exfiltration-request-block matched=markdown_img_data_url latency=0.7ms
 ```
 
-The client receives an HTTP 403 — the request never reached the upstream LLM.
+The client receives an HTTP 400 — the request never reached the upstream LLM.
 
 ### Block — auth secret leak
 

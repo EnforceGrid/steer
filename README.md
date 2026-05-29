@@ -129,7 +129,7 @@ Works with: **LangChain · LangGraph · CrewAI · AutoGen · Semantic Kernel · 
 Every proxied request emits one JSON line on stdout:
 
 ```json
-{"audit_id":"b2c3d4e5","timestamp":"2026-05-25T10:22:45Z","request":{"method":"POST","path":"/v1/chat/completions","model":"gpt-4o-mini","streaming":false},"response":{"status_code":403},"latency":{"upstream_ms":0.0,"cadabra_ms":0.7},"enforcement":{"action":"block","rule_id":"default-exfiltration-request-block","description":"Exfiltration instruction detected in request"},"tenant_id":"default"}
+{"audit_id":"b2c3d4e5","timestamp":"2026-05-25T10:22:45Z","request":{"method":"POST","path":"/v1/chat/completions","model":"gpt-4o-mini","streaming":false},"response":{"status_code":400},"latency":{"upstream_ms":0.0,"cadabra_ms":0.7},"enforcement":{"action":"block","rule_id":"default-exfiltration-request-block","description":"Exfiltration instruction detected in request"},"tenant_id":"default"}
 ```
 
 Pipe to your SIEM, your log shipper, or `jq` for local debugging. JSONL format, one record per request.

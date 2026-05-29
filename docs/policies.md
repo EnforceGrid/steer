@@ -59,7 +59,7 @@ when { context.tool_name == "mainframe_query" };
 | `flag` | Log with `action: "flag"`, forward (default for `forbid` when omitted in observation mode) |
 | `transform` | Run the configured redaction over the body, forward |
 | `steer` | Hold for human approval (EE handover queue), 202 to client |
-| `block` | Return 403 to client, do not forward (default for `forbid` when annotation omitted) |
+| `block` | Return 400 to client, do not forward (default for `forbid` when annotation omitted) |
 
 The full action vocabulary is in [docs/architecture.md#3-cedar-context-schema](architecture.md#3-cedar-context-schema).
 

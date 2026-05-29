@@ -49,9 +49,9 @@ impl IntoResponse for SteerError {
                 self.to_string(),
             ),
             SteerError::PolicyBlock { .. } => {
-                (StatusCode::FORBIDDEN, "policy_block", self.to_string())
+                (StatusCode::BAD_REQUEST, "policy_block", self.to_string())
             }
-            SteerError::PiiBlock { .. } => (StatusCode::FORBIDDEN, "pii_block", self.to_string()),
+            SteerError::PiiBlock { .. } => (StatusCode::BAD_REQUEST, "pii_block", self.to_string()),
             SteerError::NoApiKey => (StatusCode::BAD_REQUEST, "no_api_key", self.to_string()),
             _ => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -95,19 +95,19 @@ mod tests {
     }
 
     #[test]
-    fn policy_block_returns_403() {
+    fn policy_block_returns_400() {
         let err = SteerError::PolicyBlock {
             rule: "no-pii".to_string(),
         };
-        assert_eq!(status_of(err), axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(status_of(err), axum::http::StatusCode::BAD_REQUEST);
     }
 
     #[test]
-    fn pii_block_returns_403() {
+    fn pii_block_returns_400() {
         let err = SteerError::PiiBlock {
             pattern: "ssn".to_string(),
         };
-        assert_eq!(status_of(err), axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(status_of(err), axum::http::StatusCode::BAD_REQUEST);
     }
 
     #[test]
