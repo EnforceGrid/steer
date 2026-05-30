@@ -1,6 +1,6 @@
 [package]
 name = "steer-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "EnforceGrid - core runtime enforcement engine"
 license = "Apache-2.0"
