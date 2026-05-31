@@ -517,9 +517,9 @@ async fn main() -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")?;
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server error")?;
 
     info!("draining in-flight requests");
     let _ = tokio::time::timeout(

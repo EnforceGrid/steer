@@ -307,7 +307,10 @@ mod tests {
 
     #[test]
     fn scope_from_config_is_lenient() {
-        assert_eq!(ScanScope::from_config("last_message"), ScanScope::LastMessage);
+        assert_eq!(
+            ScanScope::from_config("last_message"),
+            ScanScope::LastMessage
+        );
         assert_eq!(
             ScanScope::from_config("full_conversation"),
             ScanScope::FullConversation
