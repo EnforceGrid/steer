@@ -1,6 +1,8 @@
+use axum::extract::ConnectInfo;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{extract::Request, Extension};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::middleware::TenantContext;
@@ -8,6 +10,7 @@ use crate::pipeline::PipelineState;
 
 pub async fn chat_completions(
     Extension(state): Extension<Arc<PipelineState>>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
     req: Request,
 ) -> Response {
     let (parts, body) = req.into_parts();
@@ -29,12 +32,17 @@ pub async fn chat_completions(
         parts.headers,
         body_bytes,
         override_tenant,
+        Some(remote),
     )
     .await
 }
 
-pub async fn messages(Extension(state): Extension<Arc<PipelineState>>, req: Request) -> Response {
-    chat_completions(Extension(state), req).await
+pub async fn messages(
+    Extension(state): Extension<Arc<PipelineState>>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    req: Request,
+) -> Response {
+    chat_completions(Extension(state), ConnectInfo(remote), req).await
 }
 
 pub async fn passthrough(

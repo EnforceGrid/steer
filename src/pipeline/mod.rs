@@ -178,7 +178,14 @@ pub async fn run(
     headers: HeaderMap,
     body_bytes: bytes::Bytes,
     override_tenant: Option<String>,
+    remote_addr: Option<std::net::SocketAddr>,
 ) -> Response {
+    let user_agent: Option<String> = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let remote_addr_str: Option<String> = remote_addr.map(|a| a.to_string());
     // ── Kill switch (AIUC-1 C008) ─────────────────────────────────────────────
     // Pre-policy, pre-processing emergency stop. Zero overhead when inactive.
     if state.kill_switch.load(std::sync::atomic::Ordering::Relaxed) {
@@ -704,6 +711,8 @@ pub async fn run(
             trace_context: trace_context.as_ref(),
             auth_source,
             scan_scope,
+            user_agent: user_agent.as_deref(),
+            remote_addr: remote_addr_str.as_deref(),
         });
         state.audit_sink.write(entry);
         record_perf(
@@ -787,6 +796,8 @@ pub async fn run(
                     trace_context: trace_context.as_ref(),
                     auth_source,
                     scan_scope,
+                    user_agent: user_agent.as_deref(),
+                    remote_addr: remote_addr_str.as_deref(),
                 });
                 state.audit_sink.write(entry);
 
@@ -1973,6 +1984,8 @@ pub async fn run(
             trace_context: trace_context.as_ref(),
             auth_source,
             scan_scope,
+            user_agent: user_agent.as_deref(),
+            remote_addr: remote_addr_str.as_deref(),
         });
         state.audit_sink.write(entry);
         record_perf(
@@ -2128,6 +2141,8 @@ pub async fn run(
         trace_context: trace_context.as_ref(),
         auth_source,
         scan_scope,
+        user_agent: user_agent.as_deref(),
+        remote_addr: remote_addr_str.as_deref(),
     });
     state.audit_sink.write(entry);
     record_perf(
@@ -2357,6 +2372,10 @@ struct AuditParams<'a> {
     auth_source: Option<crate::auth::AuthSource>,
     /// Scan scope used for detector evaluation (audit only).
     scan_scope: crate::scan_scope::ScanScope,
+    /// Inbound `User-Agent` header (audit only).
+    user_agent: Option<&'a str>,
+    /// TCP peer address (audit only).
+    remote_addr: Option<&'a str>,
 }
 
 /// Truncate a payload string to max_bytes, appending "[…truncated]" if cut.
@@ -2436,6 +2455,12 @@ fn build_audit_entry(p: AuditParams<'_>) -> serde_json::Value {
         entry["auth_source"] = json!(src.as_str());
     }
     entry["scan_scope"] = json!(p.scan_scope.as_str());
+    if let Some(ua) = p.user_agent {
+        entry["user_agent"] = json!(ua);
+    }
+    if let Some(addr) = p.remote_addr {
+        entry["remote_addr"] = json!(addr);
+    }
     entry
 }
 

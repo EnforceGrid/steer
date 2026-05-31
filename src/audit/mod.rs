@@ -213,6 +213,17 @@ fn format_compact(entry: &serde_json::Value, colorize: bool) -> String {
         parts.push(format!("matched={}", patterns.join(",")));
     }
 
+    if let Some(ua) = entry.get("user_agent").and_then(|v| v.as_str()) {
+        if !ua.is_empty() {
+            parts.push(format!("ua={ua}"));
+        }
+    }
+    if let Some(addr) = entry.get("remote_addr").and_then(|v| v.as_str()) {
+        if !addr.is_empty() {
+            parts.push(format!("from={addr}"));
+        }
+    }
+
     // `enforcement.observed == true` just means action == "flag". That's true
     // for both intrinsic flag policies (e.g. `default-unapproved-model-flag`,
     // which ships with `@enforcement("flag")`) and observation-mode rewrites

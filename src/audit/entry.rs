@@ -80,6 +80,16 @@ pub struct AuditEntry {
     /// `scan_scope::ScanScope`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scan_scope: Option<String>,
+
+    /// Inbound `User-Agent` header, if present. Distinguishes
+    /// `claude-cli/X.Y` from `aider/X.Y` from `curl/X.Y` etc. without
+    /// requiring the client to set `EG-Agent-Id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+
+    /// TCP peer address (`ip:port`) of the inbound connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_addr: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -298,6 +308,8 @@ impl AuditEntry {
             parent_span_id: None,
             auth_source: None,
             scan_scope: None,
+            user_agent: None,
+            remote_addr: None,
         }
     }
 }
