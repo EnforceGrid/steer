@@ -1172,6 +1172,13 @@ pub async fn run(
         let fallback_sse = fallback_triggered;
         let agent_id_audit = agent_id_str.to_string();
         let policy_context_sse = policy_context.clone();
+        // Capture v0.1.2 observability fields for the streaming audit task.
+        let user_agent_sse = user_agent.clone();
+        let remote_addr_sse = remote_addr_str.clone();
+        let auth_source_sse = auth_source;
+        let scan_scope_sse = scan_scope;
+        let trace_id_sse = trace_context.as_ref().map(|tc| tc.trace_id.clone());
+        let parent_span_id_sse = trace_context.as_ref().map(|tc| tc.parent_span_id.clone());
         let org_timezone_sse = org_timezone_str.to_string();
         let org_industry_sse = org_industry_str.to_string();
         let org_region_sse = org_region_str.to_string();
@@ -1776,6 +1783,12 @@ pub async fn run(
                     &provider_sse_post,
                     Some(agent_id_audit.as_str()),
                     Some(&policy_context_sse),
+                    user_agent_sse.as_deref(),
+                    remote_addr_sse.as_deref(),
+                    auth_source_sse,
+                    scan_scope_sse,
+                    trace_id_sse.as_deref(),
+                    parent_span_id_sse.as_deref(),
                 );
                 audit_writer_sse.write(entry);
             }
@@ -2257,6 +2270,12 @@ fn build_streaming_audit_entry(
     provider: &str,
     agent_id: Option<&str>,
     context_snapshot: Option<&Value>,
+    user_agent: Option<&str>,
+    remote_addr: Option<&str>,
+    auth_source: Option<crate::auth::AuthSource>,
+    scan_scope: crate::scan_scope::ScanScope,
+    trace_id: Option<&str>,
+    parent_span_id: Option<&str>,
 ) -> serde_json::Value {
     // Merge request-time PII findings with streaming PII findings (those that were
     // redacted during stream — tool-policy violations have empty redacted_to and are
@@ -2335,6 +2354,22 @@ fn build_streaming_audit_entry(
             }
         }
         entry["context_snapshot"] = snap;
+    }
+    if let Some(ua) = user_agent {
+        entry["user_agent"] = json!(ua);
+    }
+    if let Some(addr) = remote_addr {
+        entry["remote_addr"] = json!(addr);
+    }
+    if let Some(src) = auth_source {
+        entry["auth_source"] = json!(src.as_str());
+    }
+    entry["scan_scope"] = json!(scan_scope.as_str());
+    if let Some(tid) = trace_id {
+        entry["trace_id"] = json!(tid);
+    }
+    if let Some(span) = parent_span_id {
+        entry["parent_span_id"] = json!(span);
     }
     entry
 }
@@ -2900,7 +2935,6 @@ fn build_cedar_context_compat(params: &ContextParams) -> Value {
     ctx
 }
 
-
 /// T-901: Extract tool call names from a non-streaming response — any provider.
 ///
 /// - Anthropic/Bedrock: `content[*].type == "tool_use"` → `content[*].name`
@@ -3037,6 +3071,12 @@ mod tests {
             stats,
             streaming_enabled,
             provider,
+            None,
+            None,
+            None,
+            None,
+            None,
+            crate::scan_scope::ScanScope::LastMessage,
             None,
             None,
         )
@@ -3570,6 +3610,12 @@ mod tests {
             "openai",
             Some("force:support.voice"),
             Some(&snapshot),
+            None,
+            None,
+            None,
+            crate::scan_scope::ScanScope::LastMessage,
+            None,
+            None,
         );
 
         // Top-level pii_findings must contain the streaming finding
