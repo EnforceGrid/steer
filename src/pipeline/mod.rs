@@ -1176,6 +1176,7 @@ pub async fn run(
         // In observe mode the SSE frames must pass through byte-faithful so
         // clients on the 7-day trial see zero wire-format mutation.
         let observe_mode = !request_decision.action.requires_body_modification();
+        let stream_idle_timeout_ms = state.config.proxy.stream_idle_timeout_ms;
 
         // Channel to receive stream stats after the stream completes
         let (tx, rx) = oneshot::channel::<StreamStats>();
@@ -1207,7 +1208,20 @@ pub async fn run(
             // dropped by parse_frame without reassembly).
             let mut sse_buf: Vec<u8> = Vec::new();
 
-            while let Some(chunk_result) = raw_stream.next().await {
+            let idle_duration = std::time::Duration::from_millis(stream_idle_timeout_ms);
+            loop {
+                let chunk_result = match tokio::time::timeout(idle_duration, raw_stream.next()).await {
+                    Err(_elapsed) => {
+                        stream_verdict = "idle_timeout".to_string();
+                        yield Err::<bytes::Bytes, std::io::Error>(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("upstream stream idle timeout after {stream_idle_timeout_ms}ms"),
+                        ));
+                        break;
+                    }
+                    Ok(None) => break,
+                    Ok(Some(r)) => r,
+                };
                 match chunk_result {
                     Ok(chunk) => {
                         if first_byte_ms.is_none() {

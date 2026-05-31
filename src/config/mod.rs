@@ -177,6 +177,13 @@ pub struct ProxyConfig {
     /// being silently dropped by NAT/firewalls between Steer and the upstream.
     #[serde(default = "default_tcp_keepalive_secs")]
     pub tcp_keepalive_secs: u64,
+    /// Maximum time without receiving a chunk during a streaming response,
+    /// in milliseconds. Distinct from `timeout_ms` (total request duration):
+    /// an LLM stream may legitimately last 10+ minutes while still emitting
+    /// bytes continuously. The idle timeout aborts only when the upstream
+    /// has gone silent for this long. Default: 120s.
+    #[serde(default = "default_stream_idle_timeout_ms")]
+    pub stream_idle_timeout_ms: u64,
 }
 
 impl Default for ProxyConfig {
@@ -189,6 +196,7 @@ impl Default for ProxyConfig {
             retry_attempts: default_retry(),
             pool_max_idle_per_host: default_pool_max_idle_per_host(),
             tcp_keepalive_secs: default_tcp_keepalive_secs(),
+            stream_idle_timeout_ms: default_stream_idle_timeout_ms(),
         }
     }
 }
@@ -494,7 +502,15 @@ fn default_true() -> bool {
     true
 }
 fn default_timeout_ms() -> u64 {
-    30_000
+    // 10 minutes — matches Anthropic + OpenAI SDK defaults. Agentic workloads
+    // routinely exceed any value smaller than this when the model is doing
+    // extended reasoning or multi-step tool use. For streaming, see
+    // stream_idle_timeout_ms — total duration is rarely the right metric.
+    600_000
+}
+
+fn default_stream_idle_timeout_ms() -> u64 {
+    120_000
 }
 fn default_retry() -> u32 {
     2
@@ -696,10 +712,11 @@ mod tests {
         assert_eq!(cfg.host, "0.0.0.0");
         assert_eq!(cfg.port, 8080);
         assert!(cfg.fail_open);
-        assert_eq!(cfg.timeout_ms, 30_000);
+        assert_eq!(cfg.timeout_ms, 600_000);
         assert_eq!(cfg.retry_attempts, 2);
         assert_eq!(cfg.pool_max_idle_per_host, 25);
         assert_eq!(cfg.tcp_keepalive_secs, 30);
+        assert_eq!(cfg.stream_idle_timeout_ms, 120_000);
     }
 
     #[test]
