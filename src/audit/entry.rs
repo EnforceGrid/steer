@@ -74,6 +74,12 @@ pub struct AuditEntry {
     /// See `auth::AuthSource`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_source: Option<String>,
+
+    /// Which portion of the request body the detectors actually scanned:
+    /// `"last_message"` (default) or `"full_conversation"`. See
+    /// `scan_scope::ScanScope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -291,6 +297,7 @@ impl AuditEntry {
             trace_id: None,
             parent_span_id: None,
             auth_source: None,
+            scan_scope: None,
         }
     }
 }

@@ -386,16 +386,43 @@ pub async fn run(
     // PII runs sync only if enforcement policies reference pii_detected.
     // Otherwise, observation-mode tenants skip PII in the hot path and get
     // PII findings via async enrichment.
+    //
+    // Scan scope (last_message vs full_conversation) controls WHAT we feed
+    // to the PII engine. In last-message mode (default), only the final
+    // entry of `messages[]` is scanned — prior turns are trusted. This
+    // prevents context-poisoning wedges where one tainted past turn locks
+    // an interactive agent out of the session forever. The body bytes
+    // forwarded upstream are unchanged either way; the scope only narrows
+    // what Steer's policy engine evaluates. In last-message mode, body
+    // rewriting from PII redaction is also skipped — the redacted text
+    // is a substring of the full body and can't substitute for it.
+    let scan_scope = crate::scan_scope::ScanScope::from_config(&state.config.detectors.scan_scope);
+    let scan_text = crate::scan_scope::extract_scannable_text(&body_json, scan_scope);
     let t = Instant::now();
     let pii_result = if state.config.pii.enabled && !body_bytes.is_empty() && sync_reqs.pii_sync {
-        state.pii_engine.scan_and_redact(body_str, "request")
+        match scan_scope {
+            crate::scan_scope::ScanScope::FullConversation => {
+                state.pii_engine.scan_and_redact(body_str, "request")
+            }
+            crate::scan_scope::ScanScope::LastMessage => {
+                // Findings recorded, but redacted_text is the original full body —
+                // we don't rewrite history.
+                let scan_result = state.pii_engine.scan_and_redact(&scan_text, "request");
+                crate::pii::PiiScanResult {
+                    redacted_text: body_str.to_string(),
+                    findings: scan_result.findings,
+                }
+            }
+        }
     } else {
         crate::pii::PiiScanResult {
             redacted_text: body_str.to_string(),
             findings: vec![],
         }
     };
-    let enforced_body = if !pii_result.findings.is_empty() {
+    let enforced_body = if !pii_result.findings.is_empty()
+        && scan_scope == crate::scan_scope::ScanScope::FullConversation
+    {
         pii_result.redacted_text.as_bytes().to_vec()
     } else {
         body_bytes.to_vec()
@@ -421,7 +448,7 @@ pub async fn run(
     // Remaining detectors run post-upstream in the async enrichment task.
     const MIN_DETECTOR_TEXT_LEN: usize = 10;
     let t = Instant::now();
-    let request_text = extract_user_text(&body_json);
+    let request_text = scan_text.clone();
 
     let (sync_detector_results, async_detector_indices): (Vec<DetectionResult>, Vec<usize>) =
         if request_text.len() >= MIN_DETECTOR_TEXT_LEN && !state.detectors.is_empty() {
@@ -676,6 +703,7 @@ pub async fn run(
             hold_id: None,
             trace_context: trace_context.as_ref(),
             auth_source,
+            scan_scope,
         });
         state.audit_sink.write(entry);
         record_perf(
@@ -758,6 +786,7 @@ pub async fn run(
                     hold_id: Some(&hold.hold_id),
                     trace_context: trace_context.as_ref(),
                     auth_source,
+                    scan_scope,
                 });
                 state.audit_sink.write(entry);
 
@@ -1929,6 +1958,7 @@ pub async fn run(
             hold_id: None,
             trace_context: trace_context.as_ref(),
             auth_source,
+            scan_scope,
         });
         state.audit_sink.write(entry);
         record_perf(
@@ -2083,6 +2113,7 @@ pub async fn run(
         hold_id: None,
         trace_context: trace_context.as_ref(),
         auth_source,
+        scan_scope,
     });
     state.audit_sink.write(entry);
     record_perf(
@@ -2310,6 +2341,8 @@ struct AuditParams<'a> {
     trace_context: Option<&'a crate::trace::TraceContext>,
     /// Which source supplied the auth header forwarded upstream (audit only).
     auth_source: Option<crate::auth::AuthSource>,
+    /// Scan scope used for detector evaluation (audit only).
+    scan_scope: crate::scan_scope::ScanScope,
 }
 
 /// Truncate a payload string to max_bytes, appending "[…truncated]" if cut.
@@ -2388,6 +2421,7 @@ fn build_audit_entry(p: AuditParams<'_>) -> serde_json::Value {
     if let Some(src) = p.auth_source {
         entry["auth_source"] = json!(src.as_str());
     }
+    entry["scan_scope"] = json!(p.scan_scope.as_str());
     entry
 }
 
@@ -2827,32 +2861,6 @@ fn build_cedar_context_compat(params: &ContextParams) -> Value {
     ctx
 }
 
-/// Extract user message text from the request body for content detection.
-/// Handles OpenAI format: `messages[].content` where `role == "user"`.
-fn extract_user_text(body: &Value) -> String {
-    let mut text = String::new();
-    if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
-        for msg in messages {
-            if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
-                if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-                    if !text.is_empty() {
-                        text.push(' ');
-                    }
-                    text.push_str(content);
-                }
-            }
-        }
-    }
-    // Fallback: if no messages array, check for a top-level "input" or "prompt" field
-    if text.is_empty() {
-        if let Some(input) = body.get("input").and_then(|i| i.as_str()) {
-            text.push_str(input);
-        } else if let Some(prompt) = body.get("prompt").and_then(|p| p.as_str()) {
-            text.push_str(prompt);
-        }
-    }
-    text
-}
 
 /// T-901: Extract tool call names from a non-streaming response — any provider.
 ///

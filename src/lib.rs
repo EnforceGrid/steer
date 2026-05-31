@@ -14,6 +14,7 @@ pub mod policy;
 pub mod routes;
 pub mod routing;
 pub mod streaming;
+pub mod scan_scope;
 pub mod tenants;
 pub mod tokens;
 pub mod trace;

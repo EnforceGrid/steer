@@ -432,6 +432,19 @@ pub struct DetectorsConfig {
     /// Tool governance configuration — allowlist/denylist for tool call enforcement.
     #[serde(default)]
     pub tool_governance: ToolGovernanceConfig,
+    /// Scope of content scanned by detectors: `"last_message"` (default) or
+    /// `"full_conversation"`. Last-message scoping prevents policy false-positives
+    /// caused by prior turns in the conversation history (e.g. a tool output
+    /// from three turns ago that contained a credential pattern). Full-conversation
+    /// scope re-scans every prior turn on every request — useful for multi-turn
+    /// jailbreak detection but causes interactive coding agents to wedge once
+    /// any prior turn matches a block policy.
+    #[serde(default = "default_scan_scope")]
+    pub scan_scope: String,
+}
+
+fn default_scan_scope() -> String {
+    "last_message".to_string()
 }
 
 /// MCP server allowlist for supply chain security (OWASP ASI04).
