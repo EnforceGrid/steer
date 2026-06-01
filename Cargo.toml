@@ -40,7 +40,7 @@ tokio-stream = "0.1"
 async-stream = "0.3"
 futures = "0.3"
 tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 bytes = "1"
 arc-swap = "1"
 notify = "7"
