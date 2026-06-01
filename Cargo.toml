@@ -56,7 +56,7 @@ strip = "symbols"      # Strip debug + symbol table — ~25-40% binary size redu
 panic = "abort"        # No unwinding — smaller binary; verified no catch_unwind in src/
 
 [dev-dependencies]
-axum-test = "14"
+axum-test = "20"
 tokio-test = "0.4"
 tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
