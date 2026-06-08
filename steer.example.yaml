@@ -92,7 +92,12 @@ streaming:
 audit:
   backend: stdout              # stdout | file
   log_path: "./audit.jsonl"    # honored when backend: file
-  retain_payloads: masked      # never | masked | raw
+  retain_payloads: masked      # never | masked | raw — applies to both streaming and non-streaming.
+                               # Streaming response_payload captures emitted text-delta content only;
+                               # tool_call argument deltas and control frames are not included.
+  retain_on: on_enforcement    # always | on_enforcement — gate on the request's enforcement action.
+                               # `on_enforcement` skips payload retention when action == allow.
+  max_payload_bytes: 32768     # truncated with "[…truncated]" suffix beyond this
   # Output format:
   #   json    — single-line JSON per request (default; SIEM-friendly)
   #   compact — one human line per request, e.g.

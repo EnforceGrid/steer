@@ -56,6 +56,8 @@ Every proxied request emits one JSON line to the configured audit sink. The sche
 | `control_facts` | `object` | optional | Namespaced facts (`agent_integrity.injection_detected`, etc.) |
 | `evidence_labels` | `array` | omitted when empty | Coarse-grained labels for compliance queries |
 | `payload_redaction` | `string` | optional | `"inline"`, `"deferred"`, or `"none"` |
+| `request_payload` | `string` | present when `audit.retain_payloads != "never"` and `retain_on` gate passes | Post-PII-scan request body, truncated to `audit.max_payload_bytes` |
+| `response_payload` | `string` | same gate as above | Streaming entries hold accumulated text-delta content only; non-streaming entries hold the upstream response body |
 
 ### Request fields
 
@@ -314,9 +316,13 @@ The streaming audit entry carries:
     "bytes_emitted": 1480,
     "buffer_flushes": {"on_boundary": 12, "on_size_cap": 3, "on_stream_end": 1},
     "latency": {"first_byte_ms": 318.4, "stream_duration_ms": 2840.1, "cadabra_ms": 2.1}
-  }
+  },
+  "request_payload": "...",
+  "response_payload": "..."
 }
 ```
+
+`request_payload` and `response_payload` are present when `audit.retain_payloads != "never"` and the `audit.retain_on` gate passes (see [§4](#4-audit-entry)). On streaming entries, `response_payload` accumulates emitted text-delta content only — tool_call argument deltas, `finish_reason`, and substituted Steer/Block messages live in the enforcement metadata, not the payload field.
 
 If a response-side block fires mid-stream, Steer terminates the SSE connection with a `data: {"error":"blocked","rule_id":"..."}` frame followed by `[DONE]`. Already-emitted bytes cannot be retracted — the client has seen them.
 
