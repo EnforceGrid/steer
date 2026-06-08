@@ -2334,7 +2334,6 @@ fn extract_delta_text(v: &serde_json::Value) -> Option<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn build_streaming_audit_entry(
     audit_id: &str,
     request_id: &str,
