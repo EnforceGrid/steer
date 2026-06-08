@@ -64,6 +64,13 @@ struct StreamStats {
     /// Total wall-clock time spent in the enforcement path (PII scan + policy eval),
     /// summed across all buffer flushes. Does not include upstream wait time.
     cadabra_ms: f64,
+    /// Post-enforcement response text, accumulated across emitted text deltas.
+    /// Populated only when `audit.retain_payloads != "never"`. Non-text frames
+    /// (tool_call deltas, finish_reason, ping) are not included — this matches
+    /// what the client visibly received as response content. Truncation to
+    /// `audit.max_payload_bytes` is applied at audit-build time via
+    /// `truncate_payload` so UTF-8 boundaries are respected.
+    accumulated_response: Option<String>,
 }
 
 /// Cached sync requirements for a tenant's policy set.
@@ -1190,6 +1197,18 @@ pub async fn run(
         // the stream, they remain unauthorized when the model calls them mid-stream.
         let unauthorized_tool_detected_sse = tool_gov_result.detected;
         let tool_allowlist_mode_sse = tool_gov_result.allowlist_mode;
+        // Snapshot audit retention config for the spawned audit task. The
+        // streaming response body is assembled inside the SSE closure, so the
+        // spawn needs its own copy of these values to honor retain_payloads /
+        // retain_on without holding a reference to `state.config`.
+        // Cloned twice: once moved into the stream! closure (for the in-stream
+        // accumulator decision), once moved into the spawned audit task (for
+        // the should_retain_payload gate).
+        let retain_payloads_mode_sse = state.config.audit.retain_payloads.clone();
+        let retain_payloads_mode_audit = retain_payloads_mode_sse.clone();
+        let retain_on_mode_audit = state.config.audit.retain_on.clone();
+        let max_payload_bytes_sse = state.config.audit.max_payload_bytes;
+        let retained_request_payload_sse = retained_request_payload.clone();
         // Observe mode: Allow and Flag do not modify the response body.
         // In observe mode the SSE frames must pass through byte-faithful so
         // clients on the 7-day trial see zero wire-format mutation.
@@ -1225,6 +1244,19 @@ pub async fn run(
             // (the continuation chunk lacks the "data: " prefix and would be
             // dropped by parse_frame without reassembly).
             let mut sse_buf: Vec<u8> = Vec::new();
+
+            // Optional accumulator for audit response_payload retention. We
+            // soft-cap accumulation at max_payload_bytes_sse to bound memory on
+            // long streams; the final truncate_payload pass in the audit task
+            // handles UTF-8-safe trimming. Captures text-delta content only —
+            // tool_call deltas, finish_reason, and other non-text frames are
+            // intentionally excluded (they would clutter the audit transcript).
+            let retain_response_enabled = retain_payloads_mode_sse != "never";
+            let mut accumulated_response: Option<String> = if retain_response_enabled {
+                Some(String::new())
+            } else {
+                None
+            };
 
             let idle_duration = std::time::Duration::from_millis(stream_idle_timeout_ms);
             loop {
@@ -1424,6 +1456,11 @@ pub async fn run(
                                     cadabra_ms += enforce_t.elapsed().as_secs_f64() * 1000.0;
                                     findings.extend(new_findings);
                                     let scanned_str = String::from_utf8_lossy(&scanned);
+                                    if let Some(acc) = accumulated_response.as_mut() {
+                                        if acc.len() < max_payload_bytes_sse {
+                                            acc.push_str(&scanned_str);
+                                        }
+                                    }
                                     let encoded = parser.encode_text_delta(&scanned_str);
                                     bytes_emitted += encoded.len();
                                     frames_emitted += 1;
@@ -1566,6 +1603,11 @@ pub async fn run(
                                         match resp_decision.action {
                                             EnforcementAction::Allow => {
                                                 let scanned_str = String::from_utf8_lossy(&scanned);
+                                                if let Some(acc) = accumulated_response.as_mut() {
+                                                    if acc.len() < max_payload_bytes_sse {
+                                                        acc.push_str(&scanned_str);
+                                                    }
+                                                }
                                                 let encoded = parser.encode_text_delta(&scanned_str);
                                                 bytes_emitted += encoded.len();
                                                 frames_emitted += 1;
@@ -1584,6 +1626,11 @@ pub async fn run(
                                                     matched_text: None,
                                                 });
                                                 let scanned_str = String::from_utf8_lossy(&scanned);
+                                                if let Some(acc) = accumulated_response.as_mut() {
+                                                    if acc.len() < max_payload_bytes_sse {
+                                                        acc.push_str(&scanned_str);
+                                                    }
+                                                }
                                                 let encoded = parser.encode_text_delta(&scanned_str);
                                                 bytes_emitted += encoded.len();
                                                 frames_emitted += 1;
@@ -1603,6 +1650,11 @@ pub async fn run(
                                                 } else {
                                                     String::from_utf8_lossy(&scanned).into_owned()
                                                 };
+                                                if let Some(acc) = accumulated_response.as_mut() {
+                                                    if acc.len() < max_payload_bytes_sse {
+                                                        acc.push_str(&output_text);
+                                                    }
+                                                }
                                                 let encoded = parser.encode_text_delta(&output_text);
                                                 bytes_emitted += encoded.len();
                                                 frames_emitted += 1;
@@ -1734,6 +1786,11 @@ pub async fn run(
                 cadabra_ms += enforce_t.elapsed().as_secs_f64() * 1000.0;
                 findings.extend(new_findings);
                 let scanned_str = String::from_utf8_lossy(&scanned);
+                if let Some(acc) = accumulated_response.as_mut() {
+                    if acc.len() < max_payload_bytes_sse {
+                        acc.push_str(&scanned_str);
+                    }
+                }
                 let encoded = parser.encode_text_delta(&scanned_str);
                 bytes_emitted += encoded.len();
                 frames_emitted += 1;
@@ -1755,6 +1812,7 @@ pub async fn run(
                 stream_verdict,
                 invoked_tools: streaming_tool_names,
                 cadabra_ms,
+                accumulated_response,
             };
             let _ = tx.send(stats);
         };
@@ -1762,6 +1820,31 @@ pub async fn run(
         // Spawn a task to write the streaming audit entry once the stream closes
         tokio::spawn(async move {
             if let Ok(stats) = rx.await {
+                // Gate payload inclusion on the same predicate the non-streaming
+                // path uses (mirrors should_retain_payload). Done inline here to
+                // avoid constructing a synthetic AuditConfig.
+                let retain_for_entry = if retain_payloads_mode_audit == "never" {
+                    false
+                } else {
+                    match retain_on_mode_audit.as_str() {
+                        "always" => true,
+                        "on_enforcement" => action_str != "allow",
+                        _ => false,
+                    }
+                };
+                let req_payload_ref = if retain_for_entry {
+                    retained_request_payload_sse.as_deref()
+                } else {
+                    None
+                };
+                let resp_payload_owned: Option<String> = if retain_for_entry {
+                    stats
+                        .accumulated_response
+                        .as_deref()
+                        .map(|s| truncate_payload(s, max_payload_bytes_sse))
+                } else {
+                    None
+                };
                 let entry = build_streaming_audit_entry(
                     &audit_id_sse,
                     &request_id_sse,
@@ -1789,6 +1872,8 @@ pub async fn run(
                     scan_scope_sse,
                     trace_id_sse.as_deref(),
                     parent_span_id_sse.as_deref(),
+                    req_payload_ref,
+                    resp_payload_owned.as_deref(),
                 );
                 audit_writer_sse.write(entry);
             }
@@ -2249,6 +2334,7 @@ fn extract_delta_text(v: &serde_json::Value) -> Option<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn build_streaming_audit_entry(
     audit_id: &str,
     request_id: &str,
@@ -2276,6 +2362,10 @@ fn build_streaming_audit_entry(
     scan_scope: crate::scan_scope::ScanScope,
     trace_id: Option<&str>,
     parent_span_id: Option<&str>,
+    // Caller is responsible for applying `should_retain_payload` and
+    // `truncate_payload`; this function only writes the fields when Some.
+    request_payload: Option<&str>,
+    response_payload: Option<&str>,
 ) -> serde_json::Value {
     // Merge request-time PII findings with streaming PII findings (those that were
     // redacted during stream — tool-policy violations have empty redacted_to and are
@@ -2370,6 +2460,12 @@ fn build_streaming_audit_entry(
     }
     if let Some(span) = parent_span_id {
         entry["parent_span_id"] = json!(span);
+    }
+    if let Some(payload) = request_payload {
+        entry["request_payload"] = json!(payload);
+    }
+    if let Some(payload) = response_payload {
+        entry["response_payload"] = json!(payload);
     }
     entry
 }
@@ -3048,6 +3144,7 @@ mod tests {
             stream_verdict: verdict.to_string(),
             invoked_tools: vec![],
             cadabra_ms,
+            accumulated_response: None,
         }
     }
 
@@ -3077,6 +3174,8 @@ mod tests {
             None,
             None,
             crate::scan_scope::ScanScope::LastMessage,
+            None,
+            None,
             None,
             None,
         )
@@ -3616,6 +3715,8 @@ mod tests {
             crate::scan_scope::ScanScope::LastMessage,
             None,
             None,
+            None,
+            None,
         );
 
         // Top-level pii_findings must contain the streaming finding
@@ -3647,6 +3748,72 @@ mod tests {
         let streaming_findings = entry["streaming"]["findings"].as_array().unwrap();
         assert_eq!(streaming_findings.len(), 1);
         assert_eq!(streaming_findings[0]["location"], "streaming_tool_args");
+    }
+
+    #[test]
+    fn streaming_audit_includes_payloads_when_provided() {
+        // Regression for the defect Arun reported: build_streaming_audit_entry
+        // had no payload params, so audit.retain_payloads was silently a no-op
+        // on streaming requests. Caller now passes request/response payloads in
+        // (after applying should_retain_payload + truncate_payload upstream).
+        let stats = make_stats(500, 490, 6, 6, 1, 0, 1, Some(5.0), 335.0, 5.9, "allow");
+        let entry = build_streaming_audit_entry(
+            "audit-pl-1",
+            "req-pl-1",
+            "test-tenant",
+            "POST",
+            "/v1/chat/completions",
+            Some("gpt-4o"),
+            200,
+            5.0,
+            120.0,
+            &[],
+            "allow",
+            None,
+            &[],
+            0,
+            false,
+            &stats,
+            true,
+            "openai",
+            None,
+            None,
+            None,
+            None,
+            None,
+            crate::scan_scope::ScanScope::LastMessage,
+            None,
+            None,
+            Some("{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"),
+            Some("hello back"),
+        );
+        assert_eq!(
+            entry["request_payload"],
+            json!("{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"),
+            "request_payload must be present in streaming audit when caller supplies it"
+        );
+        assert_eq!(
+            entry["response_payload"],
+            json!("hello back"),
+            "response_payload must be present in streaming audit when caller supplies it"
+        );
+    }
+
+    #[test]
+    fn streaming_audit_omits_payloads_when_none() {
+        // When the caller passes None (retain_payloads=never or
+        // retain_on=on_enforcement with action=allow), the payload fields
+        // must be absent from the entry — not present-as-null.
+        let stats = make_stats(500, 490, 6, 6, 1, 0, 1, Some(5.0), 335.0, 5.9, "allow");
+        let entry = call_build(&stats, true, "openai");
+        assert!(
+            entry.get("request_payload").is_none(),
+            "request_payload must be absent when caller passes None"
+        );
+        assert!(
+            entry.get("response_payload").is_none(),
+            "response_payload must be absent when caller passes None"
+        );
     }
 
     // ── Observation-mode pipeline tests ───────────────────────────────────
