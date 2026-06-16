@@ -14,9 +14,10 @@
 //   Tier 0 p99 < 500µs   (pure Cedar overhead)
 //   Tier 3 p99 < 8ms     (full pipeline, 500-char payload)
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::hint::black_box;
 
 use steer_core::detectors::{
     confidential::ConfidentialDetector,
